@@ -57,3 +57,4 @@ vless://9bce98bb-2f0b-47bc-9afc-d4610c3ef630@20.61.126.216:443?encryption=none&s
 vless://test
 vless://a146f6af-9509-4b22-8932-4a97d49b9476@4.210.177.135:443?encryption=none&security=tls&sni=congenial-doodle-xrw67gw6vq5rcvv46-443.app.github.dev&fp=chrome&alpn=h2&insecure=1&allowInsecure=1&type=xhttp&host=congenial-doodle-xrw67gw6vq5rcvv46-443.app.github.dev&path=%2F&mode=packet-up#G2rayXCodeLeafy
 vless://9bce98bb-2f0b-47bc-9afc-d4610c3ef630@20.61.126.216:443?encryption=none&security=tls&sni=friendly-space-cod-jr56vwq69gvp3j746-443.app.github.dev&fp=chrome&alpn=h2&insecure=1&allowInsecure=1&type=xhttp&host=friendly-space-cod-jr56vwq69gvp3j746-443.app.github.dev&path=%2F&mode=packet-up#G2rayXCodeLeafy
+vless://test
