@@ -180,6 +180,8 @@ test_runtime_diagnostics_logging() {
         || fail 'script does not use curl remote_ip as a resolver fallback'
     grep_fixed 'curl_remote_ip "$domain"' "$SCRIPT" \
         || fail 'multi-IP resolver does not include curl remote_ip fallback'
+    grep_fixed 'curl_remote_ip "$domain" || true' "$SCRIPT" \
+        || fail 'curl remote_ip fallback can abort resolver when no remote IP is found'
     grep_fixed 'health_probe()' "$SCRIPT" \
         || fail 'script does not define a periodic health probe'
     grep_fixed 'log_event INFO "health engine=' "$SCRIPT" \

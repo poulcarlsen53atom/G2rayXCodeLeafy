@@ -116,7 +116,7 @@ resolve_domain_ips() {
         getent hosts "$domain" 2>/dev/null | awk '{print $1}' || true
         json_dns_ips "https://dns.google/resolve?name=${domain}&type=A"
         json_dns_ips "https://cloudflare-dns.com/dns-query?name=${domain}&type=A" "accept: application/dns-json"
-        curl_remote_ip "$domain"
+        curl_remote_ip "$domain" || true
     } | awk '/^[0-9]+(\.[0-9]+){3}$/ && !seen[$0]++ {print}')
     if [[ -n "$candidates" ]]; then
         joined=$(printf '%s' "$candidates" | tr '\n' ',' | sed 's/,$//')
