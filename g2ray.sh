@@ -12,6 +12,7 @@ DATA_DIR="$BASE_DIR/data"
 CONFIG_FILE="$DATA_DIR/config.json"
 UUID_FILE="$DATA_DIR/uuid.txt"
 BG_TASKS_PID="$DATA_DIR/bg_tasks.pid"
+XRAY_PID_FILE="$DATA_DIR/xray.pid"
 SAVED_BYTES_FILE="$DATA_DIR/saved_bytes.json"
 SESSION_BYTES_FILE="$DATA_DIR/session_bytes.json"
 TOTAL_UPTIME_FILE="$DATA_DIR/total_uptime_sec.txt"
@@ -46,20 +47,23 @@ _detect_codespace_name() {
 CODESPACE_NAME=$(_detect_codespace_name)
 PORT_DOMAIN="${CODESPACE_NAME}-${XRAY_PORT}.app.github.dev"
 
-xray_running() {
-    pgrep -x "xray" >/dev/null 2>&1 || pgrep -f "$XRAY_BIN run" >/dev/null 2>&1
+xray_pid_matches() {
+    local p="$1"
+    [[ "$p" =~ ^[0-9]+$ ]] || return 1
+    ps -p "$p" -o args= 2>/dev/null | grep -Fq "$XRAY_BIN run -c $CONFIG_FILE"
 }
 
-resolve_domain_ip() {
-    local domain="$1" ip=""
-    ip=$(dig +short "$domain" A 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)
-    [[ -n "$ip" ]] && { printf '%s' "$ip"; return; }
-    ip=$(getent hosts "$domain" 2>/dev/null | awk 'NR==1{print $1}' || true)
-    [[ -n "$ip" ]] && { printf '%s' "$ip"; return; }
-    ip=$(curl -sf -m 4 "https://dns.google/resolve?name=${domain}&type=A" 2>/dev/null \
-        | grep -oP '"data":"\K[0-9.]+' | head -1 || true)
-    [[ -n "$ip" ]] && { printf '%s' "$ip"; return; }
-    printf '%s' "$domain"
+xray_running() {
+    local p
+    if [[ -f "$XRAY_PID_FILE" ]]; then
+        p=$(cat "$XRAY_PID_FILE" 2>/dev/null || true)
+        if xray_pid_matches "$p" && sudo kill -0 "$p" 2>/dev/null; then
+            return 0
+        fi
+        rm -f "$XRAY_PID_FILE" 2>/dev/null || true
+    fi
+    p=$(pgrep -f "$XRAY_BIN run -c $CONFIG_FILE" | head -1 || true)
+    [[ -n "$p" ]]
 }
 
 _atomic_write() {
@@ -87,6 +91,7 @@ refresh_screen() {
 }
 
 check_for_updates() {
+    [[ "${G2RAY_AUTO_UPDATE:-0}" == "1" ]] || return 0
     clear; draw_logo
     local tmp="/tmp/g2ray_remote.sh"
     curl -s -m 8 -L "https://raw.githubusercontent.com/Code-Leafy/G2rayXCodeLeafy/main/g2ray.sh" -o "$tmp" &
@@ -233,28 +238,44 @@ save_session_uptime() {
 
 stop_xray() {
     save_xray_stats 2>/dev/null || true
-    sudo pkill -f "$XRAY_BIN run" >/dev/null 2>&1 || true
-    sudo pkill -x "xray"         >/dev/null 2>&1 || true
-    sleep 0.5
-    sudo pkill -9 -f "$XRAY_BIN run" >/dev/null 2>&1 || true
-    sudo pkill -9 -x "xray"          >/dev/null 2>&1 || true
-    if command -v fuser >/dev/null 2>&1; then
-        sudo fuser -k -9 "${XRAY_PORT}/tcp" >/dev/null 2>&1 || true
-        sudo fuser -k -9 "10085/tcp"        >/dev/null 2>&1 || true
+    local p
+    p=$(cat "$XRAY_PID_FILE" 2>/dev/null || true)
+    if ! xray_pid_matches "$p"; then
+        p=$(pgrep -f "$XRAY_BIN run -c $CONFIG_FILE" | head -1 || true)
     fi
+    if xray_pid_matches "$p" && sudo kill -0 "$p" 2>/dev/null; then
+        sudo kill "$p" >/dev/null 2>&1 || true
+        sleep 0.5
+        if sudo kill -0 "$p" 2>/dev/null; then
+            sudo kill -9 "$p" >/dev/null 2>&1 || true
+        fi
+    fi
+    rm -f "$XRAY_PID_FILE" 2>/dev/null || true
     sleep 0.5
 }
 
 start_xray() {
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo -e "  ${RED}✖ No config found. Generate one first (Option 2).${NC}"
+        return 1
+    fi
+    local launch_cmd pid
+    launch_cmd=$(printf 'nohup %q run -c %q </dev/null >%q 2>&1 & printf "%%s\n" "$!"' \
+        "$XRAY_BIN" "$CONFIG_FILE" "$LOG_DIR/xray.log")
     stop_xray
     reset_session_bytes_baseline
-    sudo bash -c "nohup $XRAY_BIN run -c $CONFIG_FILE </dev/null >$LOG_DIR/xray.log 2>&1 &"
+    pid=$(sudo bash -c "$launch_cmd" 2>/dev/null || true)
+    if [[ ! "$pid" =~ ^[0-9]+$ ]]; then
+        echo -e "  ${RED}✖ Failed to start Xray.${NC}"
+        return 1
+    fi
+    printf '%s\n' "$pid" > "$XRAY_PID_FILE"
 }
 
 wait_for_port() {
     local i=0
     echo -ne "  ${GREEN}⠋${NC} ${DIM}Initializing engine...${NC} "
-    while ! is_port_open && (( i < 15 )); do sleep 1; (( i++ )); done
+    while ! is_port_open && (( i < 15 )); do sleep 1; i=$((i + 1)); done
     echo ""
     is_port_open
 }
@@ -271,6 +292,7 @@ _background_tasks() {
                 PORT_DOMAIN="${CODESPACE_NAME}-${XRAY_PORT}.app.github.dev"
             fi
         fi
+        [[ -f "$CONFIG_FILE" ]] || continue
         ensure_codespace_port_public >/dev/null 2>&1 || true
         if ! xray_running; then
             start_xray >/dev/null 2>&1 || true
@@ -398,8 +420,7 @@ generate_config() {
   }
 }
 JSONEOF
-    start_xray
-    if wait_for_port >/dev/null 2>&1; then
+    if start_xray && wait_for_port >/dev/null 2>&1; then
         echo -e "  ${GREEN}✔ Engine started on port ${XRAY_PORT}.${NC}"
     else
         echo -e "  ${YELLOW}⚠ Engine may not have bound to port ${XRAY_PORT}.${NC}"
@@ -410,9 +431,8 @@ JSONEOF
 generate_link() {
     local uuid; uuid=$(cat "$UUID_FILE" 2>/dev/null) || { printf ''; return 1; }
     [[ -z "$uuid" ]] && { printf ''; return 1; }
-    local host; host=$(resolve_domain_ip "$PORT_DOMAIN")
     printf 'vless://%s@%s:%s?encryption=none&security=tls&sni=%s&fp=chrome&alpn=h2&insecure=1&allowInsecure=1&type=xhttp&host=%s&path=%%2F&mode=packet-up#G2rayXCodeLeafy|%s' \
-        "$uuid" "$host" "$XRAY_PORT" "$PORT_DOMAIN" "$PORT_DOMAIN" "${GITHUB_USER:-User}"
+        "$uuid" "$PORT_DOMAIN" "$XRAY_PORT" "$PORT_DOMAIN" "$PORT_DOMAIN" "${GITHUB_USER:-User}"
 }
 
 do_donate_config() {
@@ -451,8 +471,7 @@ force_reconnect() {
     echo -e "${GREEN}Done${NC}"
 
     echo -ne "  ${DIM}├─${NC} Start Engine      : "
-    start_xray >/dev/null 2>&1
-    wait_for_port >/dev/null 2>&1 \
+    start_xray >/dev/null 2>&1 && wait_for_port >/dev/null 2>&1 \
         && echo -e "${GREEN}OK${NC}" \
         || echo -e "${RED}Failed${NC}"
 
@@ -477,11 +496,9 @@ force_reconnect() {
 
 if [[ "${1:-}" == "--silent-start" ]]; then
     stop_xray >/dev/null 2>&1
-    [[ -f "$CONFIG_FILE" ]] && {
-        start_xray >/dev/null 2>&1
-        wait_for_port >/dev/null 2>&1
+    if [[ -f "$CONFIG_FILE" ]] && start_xray >/dev/null 2>&1 && wait_for_port >/dev/null 2>&1; then
         ensure_codespace_port_public
-    }
+    fi
     start_background_tasks
     exit 0
 fi
@@ -605,7 +622,9 @@ while true; do
             if xray_running; then
                 echo -e "\n  ${WHITE}Engine is already running.${NC}"
             else
-                start_xray; wait_for_port; ensure_codespace_port_public
+                if start_xray && wait_for_port; then
+                    ensure_codespace_port_public
+                fi
             fi
             sleep 1
             ;;
@@ -615,7 +634,9 @@ while true; do
             sleep 1
             ;;
         5)
-            start_xray; wait_for_port; ensure_codespace_port_public
+            if start_xray && wait_for_port; then
+                ensure_codespace_port_public
+            fi
             sleep 1
             ;;
         6) force_reconnect ;;

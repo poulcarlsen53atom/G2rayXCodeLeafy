@@ -104,6 +104,11 @@ When launched, the panel provides a 1-to-13 numerical selection menu. Simply typ
 bash ./g2ray.sh
 ```
 
+### Safer Reproducible Settings
+
+- Set `G2RAY_AUTO_UPDATE=1` only when you want the panel to replace `g2ray.sh` from upstream on startup. It is disabled by default.
+- Override the devcontainer build argument `XRAY_VERSION` to change the pinned Xray-core version. Default: `v26.5.9`.
+
 ---
 
 ## Architecture

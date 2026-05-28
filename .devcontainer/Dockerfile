@@ -1,5 +1,7 @@
 FROM debian:bookworm-slim
 
+ARG XRAY_VERSION=v26.5.9
+
 LABEL maintainer="G2rayXCodeLeafy" \
       description="Made By CodeLeafy"
 
@@ -12,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get update && apt-get install -y --no-install-recommends gh \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN wget -qO xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip" \
+RUN wget -qO xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip" \
     && unzip -q xray.zip -d /tmp/xray-dir \
     && mv /tmp/xray-dir/xray /usr/local/bin/xray \
     && mv /tmp/xray-dir/*.dat /usr/local/bin/ \
