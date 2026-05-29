@@ -5,3 +5,11 @@ compatibility_date = "2026-05-29"
 [vars]
 # Example: animated-spork-wvr97qjxqjqwcg6xq
 CODESPACE_NAME = "YOUR_CODESPACE_NAME"
+
+# Optional when the panel uses a non-default XRAY_PORT.
+# CODESPACE_PORT = "443"
+
+# Optional KV history. Create a KV namespace, then uncomment and set the id.
+# [[kv_namespaces]]
+# binding = "WAKER_KV"
+# id = "YOUR_KV_NAMESPACE_ID"

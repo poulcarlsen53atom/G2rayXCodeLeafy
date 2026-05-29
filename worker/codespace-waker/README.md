@@ -4,6 +4,8 @@ This Cloudflare Worker gives you a private manual `/wake` endpoint that starts o
 
 It does not keep the Codespace alive forever and it cannot bypass quota, billing, deletion, or account restrictions.
 
+The browser page is a small mobile-friendly health dashboard. It has a large **Start Codespace** button, a **Check Health** action, route latency/status cards, copyable status text, and auto-refresh while the route is still settling.
+
 After GitHub accepts the start request, the Worker briefly probes the public `app.github.dev` XHTTP route. If the response says `route_ready: true`, the VLESS configs should be usable. If it says `route_ready: false` with HTTP `404`, the Codespace has started but GitHub's port route is still settling; wait and retry, or open the panel and use option `6) Force Reconnect`.
 
 ## 1. Create a GitHub Token
@@ -58,6 +60,15 @@ CODESPACE_NAME = "animated-spork-wvr97qjxqjqwcg6xq"
 If you use the Cloudflare dashboard instead of Wrangler, add `CODESPACE_NAME` as a **Plaintext** variable.
 
 Optional: add `CODESPACE_PORT` as a **Plaintext** variable only if you changed the panel's `XRAY_PORT`. Leave it unset for the default port `443`.
+
+Optional history: create a Cloudflare KV namespace and bind it as `WAKER_KV`. Without this binding, the dashboard still works but shows history as disabled.
+
+Optional alerts:
+
+- Add `DISCORD_WEBHOOK_URL` as a **Secret** variable to notify a Discord channel.
+- Add `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` as **Secret** variables to notify Telegram.
+
+Alerts are sent when a wake succeeds, when the route is ready, when the route remains stuck at HTTP `404`, and when GitHub rejects the token with `401` or `403`.
 
 ## 3. Add Secrets
 
@@ -120,7 +131,7 @@ Opening the Worker URL in a browser and entering the wake secret in the form is 
 - `route_ready: false` with HTTP `404`: the Codespace started, but the GitHub route has not settled yet.
 - `401`: Wrong wake secret.
 - `402`: GitHub quota or billing blocked the start. Wait for quota reset or adjust GitHub billing settings.
-- `403`: GitHub token is rejected or missing the right scope.
+- `403`: GitHub token is rejected, expired, or missing the right scope.
 - `404`: Codespace name is wrong or the token cannot access it.
 
 ## Security Notes

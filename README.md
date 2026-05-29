@@ -170,6 +170,8 @@ The helper uses GitHub's Codespaces start API, waits until the Codespace is avai
 
 If you want a phone/browser/curl-accessible manual wake button, this repo includes a Cloudflare Worker template in `worker/codespace-waker/`. It exposes a private `/wake` endpoint that calls GitHub's Codespaces start API. The Worker stores the GitHub token and wake secret as Cloudflare secrets, not in git.
 
+The Worker also provides a private **Health dashboard** for mobile use. It shows GitHub state, XHTTP route readiness, route latency, idle timeout, last-used time, last failure, copyable status text, and optional KV-backed history. This is external health only; it does not expose your UUID, VLESS links, or the panel's full option `14) Diagnostics` output.
+
 The panel can guide this from **Option 15: Recovery / Waker Setup**. It detects the current Codespace name, generates a wake secret, reminds you to set Default idle timeout to 240 minutes, and saves only non-sensitive metadata such as the Worker URL and wake-secret fingerprint.
 
 After the Worker starts the Codespace, it briefly probes the `app.github.dev` XHTTP route. If the response says `route_ready: true`, your existing VLESS configs should work again. If it says `route_ready: false` with HTTP `404`, GitHub has started the Codespace but the port route is still settling; wait 1-2 minutes and retry, or open the panel and use option `6) Force Reconnect`.
@@ -190,6 +192,13 @@ Cloudflare dashboard binding types:
 - `CODESPACE_PORT`: **Plaintext** variable only if you changed `XRAY_PORT`; omit it for the default `443`.
 - `GITHUB_TOKEN`: **Secret** variable.
 - `WAKE_SECRET`: **Secret** variable.
+
+Optional Cloudflare dashboard bindings:
+
+- `WAKER_KV`: KV namespace binding for dashboard history.
+- `DISCORD_WEBHOOK_URL`: **Secret** variable for Discord alerts.
+- `TELEGRAM_BOT_TOKEN`: **Secret** variable for Telegram alerts.
+- `TELEGRAM_CHAT_ID`: **Secret** variable for Telegram alerts.
 
 The Worker URL can be entered with or without `https://`, and with or without `/wake`; the panel normalizes it to `https://YOUR_WORKER.workers.dev/wake`.
 

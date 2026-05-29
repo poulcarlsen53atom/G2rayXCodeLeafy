@@ -591,6 +591,52 @@ test_cloudflare_worker_waker_is_safe_to_publish() {
     pass 'Cloudflare Worker waker is safe to publish'
 }
 
+test_worker_dashboard_and_history_features() {
+    grep_fixed 'renderDashboard()' "$WORKER_SCRIPT" \
+        || fail 'Worker does not render a mobile dashboard page'
+    grep_fixed 'Start Codespace' "$WORKER_SCRIPT" \
+        || fail 'Worker dashboard does not expose a clear start button'
+    grep_fixed 'Check Health' "$WORKER_SCRIPT" \
+        || fail 'Worker dashboard does not expose a health check action'
+    grep_fixed '/api/wake' "$WORKER_SCRIPT" \
+        || fail 'Worker does not expose a dashboard wake API'
+    grep_fixed '/api/health' "$WORKER_SCRIPT" \
+        || fail 'Worker does not expose a dashboard health API'
+    grep_fixed '/api/history' "$WORKER_SCRIPT" \
+        || fail 'Worker does not expose a dashboard history API'
+    grep_fixed 'getCodespaceStatus(codespaceName, env.GITHUB_TOKEN)' "$WORKER_SCRIPT" \
+        || fail 'Worker health API does not query the GitHub Codespace state'
+    grep_fixed 'recordHistory(env, {' "$WORKER_SCRIPT" \
+        || fail 'Worker does not persist wake/health events when KV is configured'
+    grep_fixed 'env.WAKER_KV' "$WORKER_SCRIPT" \
+        || fail 'Worker does not support optional KV-backed history'
+    grep_fixed 'HISTORY_LIMIT' "$WORKER_SCRIPT" \
+        || fail 'Worker history is not bounded'
+    grep_fixed 'sendNotifications(env, event)' "$WORKER_SCRIPT" \
+        || fail 'Worker does not offer optional notification hooks'
+    grep_fixed 'DISCORD_WEBHOOK_URL' "$WORKER_SCRIPT" \
+        || fail 'Worker does not support Discord webhook notifications'
+    grep_fixed 'TELEGRAM_BOT_TOKEN' "$WORKER_SCRIPT" \
+        || fail 'Worker does not support Telegram bot notifications'
+    grep_fixed 'TELEGRAM_CHAT_ID' "$WORKER_SCRIPT" \
+        || fail 'Worker does not support Telegram chat routing'
+    grep_fixed 'GitHub token rejected or expired' "$WORKER_SCRIPT" \
+        || fail 'Worker UI/API does not warn clearly about rejected or expired GitHub tokens'
+    grep_fixed 'copyStatus' "$WORKER_SCRIPT" \
+        || fail 'Worker dashboard does not provide a copy-status action'
+    grep_fixed 'setTimeout(checkHealth' "$WORKER_SCRIPT" \
+        || fail 'Worker dashboard does not auto-refresh while the route is settling'
+    grep_fixed 'WAKER_KV' "$WORKER_README" \
+        || fail 'Worker README does not document optional KV history'
+    grep_fixed 'DISCORD_WEBHOOK_URL' "$WORKER_README" \
+        || fail 'Worker README does not document optional Discord alerts'
+    grep_fixed 'TELEGRAM_BOT_TOKEN' "$WORKER_README" \
+        || fail 'Worker README does not document optional Telegram alerts'
+    grep_fixed 'Health dashboard' "$README" \
+        || fail 'root README does not mention the private Worker health dashboard'
+    pass 'Worker dashboard, history, and alert features are documented'
+}
+
 test_panel_guides_cloudflare_waker_setup() {
     grep_fixed 'WAKER_METADATA_FILE=' "$SCRIPT" \
         || fail 'panel does not persist non-sensitive waker metadata'
@@ -997,6 +1043,7 @@ test_diagnostics_show_last_known_state
 test_diagnostics_show_resume_gap_state
 test_local_reopen_helper_is_documented
 test_cloudflare_worker_waker_is_safe_to_publish
+test_worker_dashboard_and_history_features
 test_panel_guides_cloudflare_waker_setup
 test_diagnostics_show_external_waker_state
 test_docs_cover_panel_waker_setup
