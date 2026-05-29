@@ -1,0 +1,7 @@
+name = "g2ray-codespace-waker"
+main = "src/index.js"
+compatibility_date = "2026-05-29"
+
+[vars]
+# Example: animated-spork-wvr97qjxqjqwcg6xq
+CODESPACE_NAME = "YOUR_CODESPACE_NAME"

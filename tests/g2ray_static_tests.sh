@@ -11,6 +11,10 @@ CONFIGS="$ROOT_DIR/configs.txt"
 DOCKERFILE="$ROOT_DIR/.devcontainer/Dockerfile"
 CI_WORKFLOW="$ROOT_DIR/.github/workflows/static-tests.yml"
 REOPEN_SCRIPT="$ROOT_DIR/scripts/reopen-codespace.ps1"
+WORKER_DIR="$ROOT_DIR/worker/codespace-waker"
+WORKER_SCRIPT="$WORKER_DIR/src/index.js"
+WORKER_README="$WORKER_DIR/README.md"
+WORKER_WRANGLER_EXAMPLE="$WORKER_DIR/wrangler.toml.example"
 
 fail() {
     printf 'FAIL: %s\n' "$1" >&2
@@ -535,6 +539,40 @@ test_local_reopen_helper_is_documented() {
     pass 'local reopen helper is documented'
 }
 
+test_cloudflare_worker_waker_is_safe_to_publish() {
+    [[ -f "$WORKER_SCRIPT" ]] || fail 'Cloudflare Worker waker source is missing'
+    [[ -f "$WORKER_README" ]] || fail 'Cloudflare Worker waker README is missing'
+    [[ -f "$WORKER_WRANGLER_EXAMPLE" ]] || fail 'Cloudflare Worker wrangler example is missing'
+    grep_fixed 'worker/codespace-waker/.dev.vars' "$GITIGNORE" \
+        || fail 'Worker local dev secrets are not ignored'
+    grep_fixed 'worker/codespace-waker/wrangler.toml' "$GITIGNORE" \
+        || fail 'Worker local wrangler config is not ignored'
+    grep_fixed 'env.GITHUB_TOKEN' "$WORKER_SCRIPT" \
+        || fail 'Worker does not read GitHub token from Cloudflare secret env'
+    grep_fixed 'env.WAKE_SECRET' "$WORKER_SCRIPT" \
+        || fail 'Worker does not require a separate wake secret'
+    grep_fixed 'authorization: `Bearer ${token}`' "$WORKER_SCRIPT" \
+        || fail 'Worker does not call GitHub with a bearer token'
+    grep_fixed '/user/codespaces/${encodeURIComponent(name)}/start' "$WORKER_SCRIPT" \
+        || fail 'Worker does not call the Codespaces start endpoint'
+    grep_fixed 'reason: "quota_or_billing_blocked"' "$WORKER_SCRIPT" \
+        || fail 'Worker does not classify HTTP 402 quota/billing failures'
+    grep_fixed 'wake_secret' "$WORKER_SCRIPT" \
+        || fail 'Worker browser form cannot submit the wake secret'
+    grep_fixed 'wrangler secret put GITHUB_TOKEN' "$WORKER_README" \
+        || fail 'Worker README does not instruct storing GitHub token as a secret'
+    grep_fixed 'wrangler secret put WAKE_SECRET' "$WORKER_README" \
+        || fail 'Worker README does not instruct storing wake secret as a secret'
+    grep_fixed 'Cloudflare Worker Waker' "$README" \
+        || fail 'root README does not mention the Cloudflare Worker waker'
+    for file in "$WORKER_SCRIPT" "$WORKER_README" "$WORKER_WRANGLER_EXAMPLE"; do
+        if grep_regex 'ghp_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}' "$file" 2>/dev/null; then
+            fail 'Worker files appear to contain a GitHub token'
+        fi
+    done
+    pass 'Cloudflare Worker waker is safe to publish'
+}
+
 test_background_supervisor_ownership_is_strict() {
     grep_fixed 'background_supervisor_token_current()' "$SCRIPT" \
         || fail 'background supervisor loop does not verify its token remains current'
@@ -787,6 +825,7 @@ test_diagnostics_show_self_heal_state
 test_diagnostics_show_last_known_state
 test_diagnostics_show_resume_gap_state
 test_local_reopen_helper_is_documented
+test_cloudflare_worker_waker_is_safe_to_publish
 test_background_supervisor_ownership_is_strict
 test_exports_filter_unusable_fallback_routes
 test_runtime_ready_rejects_started_but_unusable_route

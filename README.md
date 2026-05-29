@@ -151,6 +151,29 @@ gh auth refresh -h github.com -s codespace
 
 The helper uses GitHub's Codespaces start API, waits until the Codespace is available, and opens it in VS Code. If GitHub returns `HTTP 402`, the Codespace is quota or billing blocked and must wait for quota reset or a billing setting change.
 
+### Cloudflare Worker Waker
+
+If you want a phone/browser/curl-accessible manual wake button, this repo includes a Cloudflare Worker template in `worker/codespace-waker/`. It exposes a private `/wake` endpoint that calls GitHub's Codespaces start API. The Worker stores the GitHub token and wake secret as Cloudflare secrets, not in git.
+
+Quick setup:
+
+```bash
+cd worker/codespace-waker
+cp wrangler.toml.example wrangler.toml
+# edit wrangler.toml and set CODESPACE_NAME
+npx wrangler secret put GITHUB_TOKEN
+npx wrangler secret put WAKE_SECRET
+npx wrangler deploy
+```
+
+Wake call:
+
+```bash
+curl -X POST -H "Authorization: Bearer YOUR_WAKE_SECRET" https://YOUR_WORKER.workers.dev/wake
+```
+
+See `worker/codespace-waker/README.md` for the full setup and token guidance.
+
 ---
 
 ## Architecture
