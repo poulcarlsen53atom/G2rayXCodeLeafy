@@ -111,7 +111,7 @@ Generated links include `allowInsecure=1` for compatibility with IP fallback lin
 
 ## Usage
 
-When launched, the panel provides a 1-to-14 numerical selection menu. Simply type the number corresponding to the action you want to take.
+When launched, the panel provides a 1-to-15 numerical selection menu. Simply type the number corresponding to the action you want to take.
 
 ```bash
 # If panel did not get shown:
@@ -154,6 +154,10 @@ The helper uses GitHub's Codespaces start API, waits until the Codespace is avai
 ### Cloudflare Worker Waker
 
 If you want a phone/browser/curl-accessible manual wake button, this repo includes a Cloudflare Worker template in `worker/codespace-waker/`. It exposes a private `/wake` endpoint that calls GitHub's Codespaces start API. The Worker stores the GitHub token and wake secret as Cloudflare secrets, not in git.
+
+The panel can guide this from **Option 15: Recovery / Waker Setup**. It detects the current Codespace name, generates a wake secret, reminds you to set Default idle timeout to 240 minutes, and saves only non-sensitive metadata such as the Worker URL and wake-secret fingerprint.
+
+Do not paste the GitHub token into G2ray. Create the token in GitHub, save it privately, and enter it directly in Cloudflare as the `GITHUB_TOKEN` secret. The wake secret is shown once by the panel; save it privately and enter it directly in Cloudflare as the `WAKE_SECRET` secret.
 
 Quick setup:
 

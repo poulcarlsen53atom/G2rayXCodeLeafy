@@ -17,6 +17,8 @@ BG_TASKS_LOCK_DIR="$DATA_DIR/bg_tasks.lock"
 BG_TASKS_TOKEN_FILE="$DATA_DIR/bg_tasks.token"
 BG_TASKS_HEARTBEAT_FILE="$DATA_DIR/bg_tasks.heartbeat"
 RESUME_GAP_FILE="$DATA_DIR/resume_gap.txt"
+WAKER_METADATA_FILE="$DATA_DIR/waker_metadata.txt"
+WAKER_PROMPT_FILE="$DATA_DIR/.waker_setup_prompted"
 REMOTE_MESSAGE_FILE="$DATA_DIR/message.txt"
 ROUTE_BAD_COUNT_FILE="$DATA_DIR/xhttp_route_bad_count"
 EDGE_BAD_COUNT_FILE="$DATA_DIR/edge_bad_count"
@@ -348,6 +350,241 @@ _atomic_write() {
 
 first_nonempty_line() {
     awk 'NF {print; exit}' <<< "${1:-}"
+}
+
+one_line() {
+    printf '%s' "${1:-}" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+generate_wake_secret() {
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -hex 32 2>/dev/null && return 0
+    fi
+    if command -v uuidgen >/dev/null 2>&1; then
+        printf '%s%s\n' "$(uuidgen | tr -d '-')" "$(uuidgen | tr -d '-')" \
+            | tr '[:upper:]' '[:lower:]'
+        return 0
+    fi
+    if [[ -r /dev/urandom ]] && command -v od >/dev/null 2>&1; then
+        od -An -N32 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n'
+        printf '\n'
+        return 0
+    fi
+    printf '%s%s%s\n' "$(date +%s%N 2>/dev/null || date +%s)" "$RANDOM" "$RANDOM" \
+        | fingerprint_secret
+}
+
+normalize_waker_url() {
+    local url
+    url=$(one_line "${1:-}")
+    [[ -n "$url" ]] || return 1
+    [[ "$url" == http://* || "$url" == https://* ]] || url="https://${url}"
+    [[ "$url" == */wake ]] || url="${url%/}/wake"
+    printf '%s' "$url"
+}
+
+waker_metadata_value() {
+    local key="$1"
+    [[ -f "$WAKER_METADATA_FILE" ]] || return 0
+    awk -F= -v k="$key" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' \
+        "$WAKER_METADATA_FILE" 2>/dev/null || true
+}
+
+save_waker_metadata() {
+    local worker_url="$1" wake_fingerprint="$2" codespace="${3:-$CODESPACE_NAME}" configured_at content
+    worker_url=$(normalize_waker_url "$worker_url") || return 1
+    wake_fingerprint=$(one_line "$wake_fingerprint")
+    codespace=$(one_line "$codespace")
+    configured_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z')
+    content=$(printf 'worker_url=%s\ncodespace_name=%s\nwake_secret_fingerprint=%s\nconfigured_at=%s\n' \
+        "$worker_url" "$codespace" "$wake_fingerprint" "$configured_at")
+    _atomic_write "$WAKER_METADATA_FILE" "$content"
+    chmod 600 "$WAKER_METADATA_FILE" 2>/dev/null || true
+    log_event INFO "waker_metadata saved worker_url_hash=$(fingerprint_secret "$worker_url") codespace=${codespace}"
+}
+
+waker_metadata_summary() {
+    local worker_url codespace wake_fingerprint configured_at
+    worker_url=$(waker_metadata_value worker_url)
+    codespace=$(waker_metadata_value codespace_name)
+    wake_fingerprint=$(waker_metadata_value wake_secret_fingerprint)
+    configured_at=$(waker_metadata_value configured_at)
+    if [[ -n "$worker_url" ]]; then
+        echo -e "Status      : configured"
+        echo -e "Worker URL  : ${WHITE}${worker_url}${NC}"
+        echo -e "Codespace   : ${WHITE}${codespace:-$CODESPACE_NAME}${NC}"
+        echo -e "Secret      : fingerprint=${wake_fingerprint:-unknown} ${DIM}(raw secret is not stored)${NC}"
+        echo -e "Last setup  : ${DIM}${configured_at:-unknown}${NC}"
+    else
+        echo -e "Status      : not configured"
+        echo -e "Next step   : open option 15"
+    fi
+}
+
+test_cloudflare_waker() {
+    local worker_url="${1:-}" wake_secret="${2:-}" response status ok reason codespace
+    worker_url=$(normalize_waker_url "${worker_url:-$(waker_metadata_value worker_url)}" 2>/dev/null || true)
+    if [[ -z "$worker_url" ]]; then
+        echo -ne "  ${GREEN}Worker wake URL:${NC} "
+        read -r worker_url
+        worker_url=$(normalize_waker_url "$worker_url" 2>/dev/null || true)
+    fi
+    if [[ -z "$worker_url" ]]; then
+        echo -e "  ${RED}Missing Worker URL.${NC}"
+        return 1
+    fi
+    if [[ -z "$wake_secret" ]]; then
+        echo -ne "  ${GREEN}Wake secret (hidden):${NC} "
+        read -r -s wake_secret
+        echo ""
+    fi
+    if [[ -z "$wake_secret" ]]; then
+        echo -e "  ${RED}Missing wake secret.${NC}"
+        return 1
+    fi
+
+    echo -e "  ${DIM}Calling Worker with Authorization: Bearer ...${NC}"
+    response=$(curl -sS -m 30 -X POST -H "Authorization: Bearer ${wake_secret}" "$worker_url" 2>&1) || {
+        echo -e "  ${RED}Worker call failed.${NC}"
+        printf '%s\n' "$response" | sed 's/^/  /'
+        return 1
+    }
+
+    if command -v jq >/dev/null 2>&1 && printf '%s' "$response" | jq . >/dev/null 2>&1; then
+        ok=$(printf '%s' "$response" | jq -r '.ok // false' 2>/dev/null)
+        status=$(printf '%s' "$response" | jq -r '.status // empty' 2>/dev/null)
+        reason=$(printf '%s' "$response" | jq -r '.reason // empty' 2>/dev/null)
+        codespace=$(printf '%s' "$response" | jq -r '.codespace // .body.name // empty' 2>/dev/null)
+        echo -e "  Result    : ${WHITE}ok=${ok} status=${status:-unknown}${NC}"
+        [[ -n "$codespace" ]] && echo -e "  Codespace : ${WHITE}${codespace}${NC}"
+        [[ -n "$reason" ]] && echo -e "  Reason    : ${YELLOW}${reason}${NC}"
+    else
+        printf '%s\n' "$response" | sed 's/^/  /'
+    fi
+}
+
+show_waker_recovery_guide() {
+    refresh_screen
+    echo -e "\n  ${RED}Recovery Guide${NC}\n"
+    echo -e "  If configs suddenly stop working because GitHub stopped the Codespace:"
+    echo -e "  1. Open your Worker wake URL in a browser."
+    echo -e "  2. Paste your wake secret."
+    echo -e "  3. Click Start Codespace."
+    echo -e "  4. Wait 30-90 seconds for the Codespace and XHTTP route to settle."
+    echo -e "  5. Use the same v2rayN config again.\n"
+    echo -e "  This works only if the Codespace still exists and GitHub quota/token are valid."
+    echo -e "  It cannot bypass quota, billing, deletion, or account restrictions.\n"
+    echo -e "  ${WHITE}${B}Saved Waker${NC}"
+    waker_metadata_summary | sed 's/^/  /'
+    echo ""; echo -ne "  ${DIM}Press Enter to return...${NC}"; read -r
+}
+
+setup_cloudflare_waker() {
+    local wake_secret wake_fingerprint worker_url ready do_test
+    CODESPACE_NAME=$(_detect_codespace_name 2>/dev/null || true)
+    PORT_DOMAIN="${CODESPACE_NAME}-${XRAY_PORT}.app.github.dev"
+    wake_secret=$(generate_wake_secret)
+    wake_fingerprint=$(fingerprint_secret "$wake_secret")
+
+    refresh_screen
+    echo -e "\n  ${RED}Cloudflare Worker Waker Setup${NC}\n"
+    echo -e "  ${WHITE}Detected Codespace:${NC} ${GREEN}${CODESPACE_NAME}${NC}"
+    echo -e "  ${WHITE}Codespaces app domain:${NC} ${GREEN}${PORT_DOMAIN}${NC}\n"
+    echo -e "  First, set GitHub Codespaces ${WHITE}Default idle timeout${NC} to ${WHITE}240 minutes${NC}:"
+    echo -e "  GitHub -> Settings -> Codespaces -> Default idle timeout -> 240 minutes.\n"
+    echo -e "  ${WHITE}${B}Step 1 - Create a GitHub token${NC}"
+    echo -e "  Create a GitHub token that can start this Codespace."
+    echo -e "  Classic token: select the ${WHITE}codespace${NC} scope."
+    echo -e "  Do not paste the GitHub token into G2ray."
+    echo -e "  Save it privately, then put it directly into Cloudflare as secret ${WHITE}GITHUB_TOKEN${NC}.\n"
+    echo -e "  ${WHITE}${B}Step 2 - Create a Worker${NC}"
+    echo -e "  In Cloudflare, create a Hello World Worker, open its editor, and replace the code with:"
+    echo -e "  ${WHITE}${BASE_DIR}/worker/codespace-waker/src/index.js${NC}\n"
+    echo -e "  Set Worker variable ${WHITE}CODESPACE_NAME${NC} to:"
+    echo -e "  ${GREEN}${CODESPACE_NAME}${NC}\n"
+    echo -e "  Set Worker secrets:"
+    echo -e "  ${WHITE}GITHUB_TOKEN${NC} -> the GitHub token you created"
+    echo -e "  ${WHITE}WAKE_SECRET${NC}  -> the wake secret below\n"
+    echo -e "  The wake secret is shown once. Save it now and paste it into Cloudflare:"
+    echo -e "  ${GREEN}${wake_secret}${NC}"
+    echo -e "  ${DIM}Fingerprint saved locally: ${wake_fingerprint}${NC}\n"
+    echo -ne "  ${GREEN}Is the Worker deployed with those values? (y/n):${NC} "
+    read -r ready
+    [[ "$ready" =~ ^[Yy]$ ]] || { echo -e "  ${DIM}Setup paused. Open option 15 when ready.${NC}"; sleep 2; return 0; }
+
+    echo -ne "  ${GREEN}Worker wake URL:${NC} "
+    read -r worker_url
+    worker_url=$(normalize_waker_url "$worker_url" 2>/dev/null || true)
+    if [[ -z "$worker_url" ]]; then
+        echo -e "  ${RED}Invalid Worker URL.${NC}"
+        sleep 2
+        return 1
+    fi
+    save_waker_metadata "$worker_url" "$(fingerprint_secret "$wake_secret")" "$CODESPACE_NAME"
+    touch "$WAKER_PROMPT_FILE" 2>/dev/null || true
+    echo -e "  ${GREEN}Saved non-sensitive waker metadata.${NC}"
+    echo -e "  ${DIM}GitHub token and raw wake secret were not stored in G2ray.${NC}\n"
+    echo -ne "  ${GREEN}Test Worker now? (y/n):${NC} "
+    read -r do_test
+    if [[ "$do_test" =~ ^[Yy]$ ]]; then
+        test_cloudflare_waker "$worker_url" "$wake_secret" || true
+    fi
+    echo ""; echo -ne "  ${DIM}Press Enter to return...${NC}"; read -r
+}
+
+reset_waker_metadata() {
+    local confirm
+    echo -e "\n  ${YELLOW}Remove saved Worker URL/fingerprint metadata?${NC}"
+    echo -ne "  ${GREEN}Proceed (y/n):${NC} "
+    read -r confirm
+    [[ "$confirm" =~ ^[Yy]$ ]] || return 0
+    rm -f "$WAKER_METADATA_FILE" "$WAKER_PROMPT_FILE" 2>/dev/null || true
+    log_event INFO "waker_metadata reset"
+    echo -e "  ${GREEN}Waker metadata reset.${NC}"
+    sleep 1
+}
+
+show_recovery_waker() {
+    local choice
+    while true; do
+        refresh_screen
+        echo -e "\n  ${RED}Recovery / Waker Setup${NC}\n"
+        echo -e "  ${WHITE}${B}External Waker${NC}"
+        waker_metadata_summary | sed 's/^/  /'
+        echo ""
+        echo -e "  ${RED}1)${NC} Setup Cloudflare Waker"
+        echo -e "  ${RED}2)${NC} Show Recovery Instructions"
+        echo -e "  ${RED}3)${NC} Test Worker URL"
+        echo -e "  ${RED}4)${NC} Reset Saved Waker Metadata"
+        echo -e "  ${RED}0)${NC} Return"
+        echo -ne "  ${RED}Select:${NC} "
+        read -r choice
+        case "$choice" in
+            1) setup_cloudflare_waker ;;
+            2) show_waker_recovery_guide ;;
+            3)
+                test_cloudflare_waker || true
+                echo ""; echo -ne "  ${DIM}Press Enter to return...${NC}"; read -r
+                ;;
+            4) reset_waker_metadata ;;
+            0) return 0 ;;
+            *) echo -e "  ${RED}Invalid option.${NC}"; sleep 1 ;;
+        esac
+    done
+}
+
+maybe_prompt_waker_setup() {
+    [[ -f "$WAKER_METADATA_FILE" || -f "$WAKER_PROMPT_FILE" ]] && return 0
+    local answer
+    refresh_screen
+    echo -e "\n  ${RED}Optional Recovery Waker${NC}\n"
+    echo -e "  GitHub can stop Codespaces when idle. This panel can guide you through"
+    echo -e "  a Cloudflare Worker wake page so you can restart the Codespace from a browser."
+    echo -e "  Do not paste the GitHub token into G2ray; the wizard sends it to Cloudflare only by your hand.\n"
+    echo -ne "  ${GREEN}Set up the recovery waker now? (y/n):${NC} "
+    read -r answer
+    touch "$WAKER_PROMPT_FILE" 2>/dev/null || true
+    [[ "$answer" =~ ^[Yy]$ ]] && setup_cloudflare_waker
 }
 
 render_config_qr() {
@@ -1387,6 +1624,9 @@ show_diagnostics() {
     echo -e "\n  ${WHITE}${B}Last Known State${NC}"
     last_known_state_summary | sed 's/^/  /'
 
+    echo -e "\n  ${WHITE}${B}External Waker${NC}"
+    waker_metadata_summary | sed 's/^/  /'
+
     echo -e "\n  ${WHITE}${B}Fallback IP Candidates${NC}"
     echo -e "  ${DIM}(includes resolved, manual, and built-in fallbacks)${NC}"
     local ips; ips=$(resolve_domain_ips "$PORT_DOMAIN" || true)
@@ -1594,12 +1834,14 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
         generate_config
         echo -e "\n  ${GREEN}✔ Setup complete!${NC}"
         sleep 1
+        maybe_prompt_waker_setup
     else
         exit 0
     fi
 else
     refresh_screen
     ensure_runtime_ready "interactive_attach" >/dev/null 2>&1 || true
+    maybe_prompt_waker_setup
 fi
 
 while true; do
@@ -1631,7 +1873,8 @@ while true; do
     echo -e "  ${WHITE}${B}● ANALYTICS & TOOLS${NC}"
     echo -e "   ${RED}9)${NC} Data Usage                 ${RED}12)${NC} Server Location"
     echo -e "  ${RED}10)${NC} Resource Stats             ${RED}13)${NC} View Engine Logs"
-    echo -e "  ${RED}14) Diagnostics${NC}"
+    # Menu labels: 14) Diagnostics, 15) Recovery / Waker Setup
+    echo -e "  ${RED}14)${NC} Diagnostics                ${RED}15)${NC} Recovery / Waker Setup"
     echo -e "  ${RED}11)${NC} Quota & Uptime"
     echo ""
     echo -e "   ${RED}0)${NC} Exit Panel"
@@ -1821,6 +2064,7 @@ while true; do
             echo -ne "  ${DIM}Press Enter to return...${NC}"; read -r
             ;;
         14) show_diagnostics ;;
+        15) show_recovery_waker ;;
         0) echo -e "\n  ${GREEN}Exiting G2ray Panel...${NC}"; exit 0 ;;
         *) echo -e "  ${RED}✖ Invalid option.${NC}"; sleep 1 ;;
     esac

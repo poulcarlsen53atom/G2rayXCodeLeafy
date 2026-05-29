@@ -573,6 +573,81 @@ test_cloudflare_worker_waker_is_safe_to_publish() {
     pass 'Cloudflare Worker waker is safe to publish'
 }
 
+test_panel_guides_cloudflare_waker_setup() {
+    grep_fixed 'WAKER_METADATA_FILE=' "$SCRIPT" \
+        || fail 'panel does not persist non-sensitive waker metadata'
+    grep_fixed 'generate_wake_secret()' "$SCRIPT" \
+        || fail 'panel cannot generate a one-time wake secret'
+    grep_fixed 'save_waker_metadata()' "$SCRIPT" \
+        || fail 'panel cannot save the configured Worker URL metadata'
+    grep_fixed 'waker_metadata_summary()' "$SCRIPT" \
+        || fail 'diagnostics cannot summarize configured waker metadata'
+    grep_fixed 'setup_cloudflare_waker()' "$SCRIPT" \
+        || fail 'panel does not provide a guided Cloudflare Worker setup flow'
+    grep_fixed 'test_cloudflare_waker()' "$SCRIPT" \
+        || fail 'panel cannot test a configured Worker URL on demand'
+    grep_fixed 'reset_waker_metadata()' "$SCRIPT" \
+        || fail 'panel cannot clear saved waker metadata'
+    grep_fixed 'show_recovery_waker()' "$SCRIPT" \
+        || fail 'panel does not expose a recovery/waker menu screen'
+    grep_fixed '15) Recovery / Waker Setup' "$SCRIPT" \
+        || fail 'main menu does not expose recovery/waker setup'
+    grep_fixed '15) show_recovery_waker' "$SCRIPT" \
+        || fail 'case statement does not route to the recovery/waker setup screen'
+    grep_fixed 'Do not paste the GitHub token into G2ray' "$SCRIPT" \
+        || fail 'wizard does not warn users not to store GitHub tokens in the panel'
+    grep_fixed 'The wake secret is shown once' "$SCRIPT" \
+        || fail 'wizard does not warn that the raw wake secret is not persisted'
+    grep_fixed 'Default idle timeout' "$SCRIPT" \
+        || fail 'wizard does not guide users to the GitHub idle timeout setting'
+    grep_fixed '240 minutes' "$SCRIPT" \
+        || fail 'wizard does not recommend the 240 minute idle timeout'
+    grep_fixed 'Authorization: Bearer' "$SCRIPT" \
+        || fail 'wizard/test flow does not use the safer bearer secret form'
+    grep_fixed 'fingerprint_secret "$wake_secret"' "$SCRIPT" \
+        || fail 'wizard does not store only a fingerprint of the wake secret'
+    if grep_fixed 'GITHUB_TOKEN=' "$SCRIPT"; then
+        fail 'panel appears to store a GitHub token assignment'
+    fi
+    pass 'panel guides Cloudflare waker setup without storing tokens'
+}
+
+test_diagnostics_show_external_waker_state() {
+    grep_fixed 'External Waker' "$SCRIPT" \
+        || fail 'diagnostics do not show external waker state'
+    grep_fixed 'waker_metadata_summary | sed' "$SCRIPT" \
+        || fail 'diagnostics do not render the waker metadata summary'
+    grep_fixed 'Status      : configured' "$SCRIPT" \
+        || fail 'waker summary cannot report configured status'
+    grep_fixed 'Status      : not configured' "$SCRIPT" \
+        || fail 'waker summary cannot report missing setup'
+    grep_fixed 'Next step   : open option 15' "$SCRIPT" \
+        || fail 'waker summary does not point users to the recovery setup option'
+    grep_fixed 'Worker URL  :' "$SCRIPT" \
+        || fail 'waker summary omits the Worker URL'
+    grep_fixed 'Secret      : fingerprint=' "$SCRIPT" \
+        || fail 'waker summary omits the wake secret fingerprint'
+    pass 'diagnostics show external waker state'
+}
+
+test_docs_cover_panel_waker_setup() {
+    grep_fixed 'Option 15' "$README" \
+        || fail 'README does not document the panel recovery setup option'
+    grep_fixed 'Do not paste the GitHub token into G2ray' "$README" \
+        || fail 'README does not warn against storing GitHub tokens in the panel'
+    grep_fixed 'The wake secret is shown once' "$README" \
+        || fail 'README does not explain one-time wake secret handling'
+    grep_fixed 'Recovery / Waker Setup' "$README" \
+        || fail 'README does not name the recovery setup screen'
+    grep_fixed 'set Default idle timeout to 240 minutes' "$README" \
+        || fail 'README does not connect recovery setup to the 240 minute idle timeout'
+    grep_fixed 'Recovery / Waker Setup' "$WORKER_README" \
+        || fail 'Worker README does not mention the panel setup flow'
+    grep_fixed 'Do not paste the GitHub token into G2ray' "$WORKER_README" \
+        || fail 'Worker README does not mirror the token handling warning'
+    pass 'docs cover panel waker setup'
+}
+
 test_background_supervisor_ownership_is_strict() {
     grep_fixed 'background_supervisor_token_current()' "$SCRIPT" \
         || fail 'background supervisor loop does not verify its token remains current'
@@ -718,7 +793,7 @@ test_xhttp_route_settling_is_observable() {
 }
 
 test_docs_and_public_configs_are_consistent() {
-    grep_fixed '1-to-14' "$README" \
+    grep_fixed '1-to-15' "$README" \
         || fail 'README menu count is stale'
     if grep_fixed 'did now get shown' "$README"; then
         fail 'README still contains the "did now" typo'
@@ -826,6 +901,9 @@ test_diagnostics_show_last_known_state
 test_diagnostics_show_resume_gap_state
 test_local_reopen_helper_is_documented
 test_cloudflare_worker_waker_is_safe_to_publish
+test_panel_guides_cloudflare_waker_setup
+test_diagnostics_show_external_waker_state
+test_docs_cover_panel_waker_setup
 test_background_supervisor_ownership_is_strict
 test_exports_filter_unusable_fallback_routes
 test_runtime_ready_rejects_started_but_unusable_route

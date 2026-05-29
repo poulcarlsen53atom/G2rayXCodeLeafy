@@ -13,6 +13,10 @@ Use one of these:
 
 Keep this token private. Do not commit it to git.
 
+If you are using the G2ray panel, open **Option 15: Recovery / Waker Setup**. It will detect the Codespace name, generate a wake secret, and show these same steps inside the terminal.
+
+Do not paste the GitHub token into G2ray. Put the token directly into Cloudflare as the `GITHUB_TOKEN` secret. The wake secret is shown once by the panel; save it privately and put it directly into Cloudflare as the `WAKE_SECRET` secret.
+
 ## 2. Configure Wrangler
 
 Install or use Wrangler:
