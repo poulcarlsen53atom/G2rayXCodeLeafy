@@ -20,6 +20,7 @@ REMOTE_MESSAGE_FILE="$DATA_DIR/message.txt"
 ROUTE_BAD_COUNT_FILE="$DATA_DIR/xhttp_route_bad_count"
 EDGE_BAD_COUNT_FILE="$DATA_DIR/edge_bad_count"
 EDGE_RECONNECT_STAMP_FILE="$DATA_DIR/edge_reconnect_last"
+QUOTA_CYCLE_FILE="$DATA_DIR/quota_cycle.txt"
 XRAY_PID_FILE="$DATA_DIR/xray.pid"
 SAVED_BYTES_FILE="$DATA_DIR/saved_bytes.json"
 SESSION_BYTES_FILE="$DATA_DIR/session_bytes.json"
@@ -36,6 +37,8 @@ DEFAULT_FALLBACK_IPS="${G2RAY_DEFAULT_FALLBACK_IPS:-20.85.77.48 20.207.70.99 20.
 MAX_FALLBACK_LINKS="${G2RAY_MAX_FALLBACK_LINKS:-3}"
 SELF_HEAL_EDGE_RECONNECT_THRESHOLD="${G2RAY_EDGE_RECONNECT_THRESHOLD:-3}"
 SELF_HEAL_RECONNECT_COOLDOWN_SEC="${G2RAY_RECONNECT_COOLDOWN_SEC:-300}"
+LOG_MAX_BYTES="${G2RAY_LOG_MAX_BYTES:-1048576}"
+LOG_ROTATE_KEEP="${G2RAY_LOG_ROTATE_KEEP:-3}"
 
 umask 077
 mkdir -p "$DATA_DIR" "$LOG_DIR"
@@ -52,7 +55,50 @@ log_event() {
     local ts msg
     ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z')
     msg="$*"
+    rotate_log_file "$LOG_FILE"
     printf '%s [%s] %s\n' "$ts" "$level" "$msg" >> "$LOG_FILE" 2>/dev/null || true
+}
+
+rotate_log_file() {
+    local file="$1" max="$LOG_MAX_BYTES" keep="$LOG_ROTATE_KEEP" size i prev next
+    [[ "$max" =~ ^[0-9]+$ && "$max" -gt 0 ]] || max=1048576
+    [[ "$keep" =~ ^[0-9]+$ && "$keep" -gt 0 ]] || keep=3
+    [[ -f "$file" ]] || return 0
+    size=$(wc -c < "$file" 2>/dev/null || echo 0)
+    [[ "$size" =~ ^[0-9]+$ ]] || size=0
+    (( size < max )) && return 0
+    rm -f "${file}.${keep}" 2>/dev/null || true
+    for ((i=keep-1; i>=1; i--)); do
+        prev="${file}.${i}"
+        next="${file}.$((i + 1))"
+        [[ -f "$prev" ]] && mv -f "$prev" "$next" 2>/dev/null || true
+    done
+    mv -f "$file" "${file}.1" 2>/dev/null || true
+    : > "$file" 2>/dev/null || true
+    chmod 600 "$file" 2>/dev/null || true
+}
+
+run_gh() {
+    command -v gh >/dev/null 2>&1 || return 127
+    if command -v timeout >/dev/null 2>&1; then
+        GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 NO_COLOR=1 GH_FORCE_TTY=0 \
+            timeout "${G2RAY_GH_TIMEOUT_SEC:-10}" gh "$@"
+    else
+        GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 NO_COLOR=1 GH_FORCE_TTY=0 gh "$@"
+    fi
+}
+
+curl_http_code() {
+    local url="$1" timeout_sec="${2:-5}" code
+    if code=$(curl -s -m "$timeout_sec" -o /dev/null -w "%{http_code}" "$url" 2>/dev/null); then
+        if [[ "$code" =~ ^[0-9]{3}$ && "$code" != "000" ]]; then
+            printf '%s' "$code"
+        else
+            printf '0'
+        fi
+        return 0
+    fi
+    printf '0'
 }
 
 valid_codespace_name() {
@@ -73,12 +119,10 @@ _detect_codespace_name() {
     valid_codespace_name "${CODESPACE_NAME:-}" && { printf '%s' "$CODESPACE_NAME"; return; }
     if command -v gh >/dev/null 2>&1; then
         local n
-        n=$(GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 NO_COLOR=1 GH_FORCE_TTY=0 \
-            gh codespace list --limit 1 --json name --jq '.[0].name // ""' 2>/dev/null || true)
+        n=$(run_gh codespace list --limit 1 --json name --jq '.[0].name // ""' 2>/dev/null || true)
         valid_codespace_name "$n" && { printf '%s' "$n"; return; }
         sleep 2
-        n=$(GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 NO_COLOR=1 GH_FORCE_TTY=0 \
-            gh codespace list --limit 1 --json name --jq '.[0].name // ""' 2>/dev/null || true)
+        n=$(run_gh codespace list --limit 1 --json name --jq '.[0].name // ""' 2>/dev/null || true)
         valid_codespace_name "$n" && { printf '%s' "$n"; return; }
     fi
     local h; h=$(hostname 2>/dev/null || true)
@@ -153,14 +197,16 @@ xhttp_probe_metrics() {
         *)     url="https://${PORT_DOMAIN}:${CODESPACES_EDGE_PORT}${path}" ;;
     esac
     if [[ "$target" == "local" || -z "$address" ]]; then
-        raw=$(curl -sk -m 5 -X OPTIONS -o /dev/null -w "%{http_code} %{time_total}" "$url" 2>/dev/null || echo "0 0")
+        raw=$(curl -sk -m 5 -X OPTIONS -o /dev/null -w "%{http_code} %{time_total}" "$url" 2>/dev/null) || raw="0 0"
     else
         raw=$(curl -sk -m 5 --resolve "${PORT_DOMAIN}:${CODESPACES_EDGE_PORT}:${address}" \
-            -X OPTIONS -o /dev/null -w "%{http_code} %{time_total}" "$url" 2>/dev/null || echo "0 0")
+            -X OPTIONS -o /dev/null -w "%{http_code} %{time_total}" "$url" 2>/dev/null) || raw="0 0"
     fi
     code=${raw%% *}
     elapsed=${raw#* }
+    [[ "$code" =~ ^[0-9]{3}$ ]] || code=0
     [[ "$code" == "000" ]] && code=0
+    [[ "$elapsed" =~ ^[0-9]+([.][0-9]+)?$ ]] || elapsed=0
     ms=$(awk -v s="${elapsed:-0}" 'BEGIN{printf "%d", (s * 1000) + 0.5}')
     printf '%s %s\n' "${code:-0}" "${ms:-0}"
 }
@@ -213,6 +259,31 @@ edge_reconnect_cooldown_active() {
 
 mark_edge_reconnect_attempt() {
     date +%s > "$EDGE_RECONNECT_STAMP_FILE" 2>/dev/null || true
+}
+
+self_heal_state_summary() {
+    local route_bad edge_bad now last cooldown remaining last_age threshold
+    route_bad=$(cat "$ROUTE_BAD_COUNT_FILE" 2>/dev/null || echo 0)
+    edge_bad=$(cat "$EDGE_BAD_COUNT_FILE" 2>/dev/null || echo 0)
+    last=$(cat "$EDGE_RECONNECT_STAMP_FILE" 2>/dev/null || echo 0)
+    [[ "$route_bad" =~ ^[0-9]+$ ]] || route_bad=0
+    [[ "$edge_bad" =~ ^[0-9]+$ ]] || edge_bad=0
+    [[ "$last" =~ ^[0-9]+$ ]] || last=0
+    cooldown="$SELF_HEAL_RECONNECT_COOLDOWN_SEC"
+    [[ "$cooldown" =~ ^[0-9]+$ ]] || cooldown=300
+    threshold="$SELF_HEAL_EDGE_RECONNECT_THRESHOLD"
+    [[ "$threshold" =~ ^[0-9]+$ ]] || threshold=3
+    now=$(date +%s)
+    if (( last > 0 && now >= last )); then
+        last_age="$((now - last))s"
+        remaining=$((cooldown - (now - last)))
+        (( remaining < 0 )) && remaining=0
+    else
+        last_age="never"
+        remaining=0
+    fi
+    printf 'route_bad=%s edge_bad=%s threshold=%s cooldown_remaining=%ss last_reconnect_age=%s\n' \
+        "$route_bad" "$edge_bad" "$threshold" "$remaining" "$last_age"
 }
 
 resolve_domain_ips() {
@@ -418,16 +489,14 @@ xray_listener_ready() {
 
 ensure_codespace_port_public() {
     command -v gh >/dev/null 2>&1 || return 1
-    GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 NO_COLOR=1 GH_FORCE_TTY=0 \
-        gh codespace ports visibility "${XRAY_PORT}:public" -c "$CODESPACE_NAME" \
+    run_gh codespace ports visibility "${XRAY_PORT}:public" -c "$CODESPACE_NAME" \
         </dev/null >/dev/null 2>&1
 }
 
 repair_codespace_port_route() {
     command -v gh >/dev/null 2>&1 || return 1
     log_event WARN "route_repair begin port=${XRAY_PORT} domain=${PORT_DOMAIN}"
-    GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 NO_COLOR=1 GH_FORCE_TTY=0 \
-        gh codespace ports visibility "${XRAY_PORT}:private" -c "$CODESPACE_NAME" \
+    run_gh codespace ports visibility "${XRAY_PORT}:private" -c "$CODESPACE_NAME" \
         </dev/null >/dev/null 2>&1 || true
     sleep 2
     if ensure_codespace_port_public; then
@@ -488,8 +557,31 @@ reset_session_bytes_baseline() {
     _atomic_write "$SESSION_BYTES_FILE" '{"down":0,"up":0}'
 }
 
+current_quota_cycle() {
+    date -u '+%Y-%m' 2>/dev/null || date '+%Y-%m'
+}
+
+reset_monthly_quota_if_needed() {
+    local current stored now
+    current=$(current_quota_cycle)
+    stored=$(cat "$QUOTA_CYCLE_FILE" 2>/dev/null || true)
+    if [[ -z "$stored" ]]; then
+        printf '%s\n' "$current" > "$QUOTA_CYCLE_FILE"
+        chmod 600 "$QUOTA_CYCLE_FILE" 2>/dev/null || true
+        return 0
+    fi
+    [[ "$stored" == "$current" ]] && return 0
+    now=$(date +%s)
+    printf '0\n' > "$TOTAL_UPTIME_FILE"
+    printf '%s\n' "$now" > "$SESSION_START_FILE"
+    printf '%s\n' "$current" > "$QUOTA_CYCLE_FILE"
+    chmod 600 "$QUOTA_CYCLE_FILE" "$TOTAL_UPTIME_FILE" "$SESSION_START_FILE" 2>/dev/null || true
+    log_event INFO "quota_cycle_reset old=${stored} new=${current}"
+}
+
 save_session_uptime() {
     local ss now elapsed prev
+    reset_monthly_quota_if_needed
     ss=$(cat "$SESSION_START_FILE" 2>/dev/null || date +%s)
     now=$(date +%s)
     elapsed=$(( now - ss ))
@@ -620,7 +712,7 @@ health_probe() {
     local engine="stopped" listener="closed" code xcode xms xhttp_route_usable=false
     xray_running && engine="running"
     is_port_open && listener="open"
-    code=$(curl -s -m 5 -o /dev/null -w "%{http_code}" "https://${PORT_DOMAIN}" 2>/dev/null || echo "0")
+    code=$(curl_http_code "https://${PORT_DOMAIN}" 5)
     read -r xcode xms < <(xhttp_probe_metrics external)
     xhttp_status_usable "$xcode" && xhttp_route_usable=true
     log_event INFO "health engine=${engine} listener=${listener} external_code=${code:-0} xhttp_probe=${xcode:-0} xhttp_probe_ms=${xms:-0} xhttp_route_usable=${xhttp_route_usable} domain=${PORT_DOMAIN}"
@@ -658,7 +750,7 @@ self_heal_once() {
         return 0
     fi
 
-    code=$(curl -s -m 5 -o /dev/null -w "%{http_code}" "https://${PORT_DOMAIN}" 2>/dev/null || echo "0")
+    code=$(curl_http_code "https://${PORT_DOMAIN}" 5)
     if [[ "$code" == "000" || "$code" == "0" ]]; then
         threshold="$SELF_HEAL_EDGE_RECONNECT_THRESHOLD"
         [[ "$threshold" =~ ^[0-9]+$ ]] || threshold=3
@@ -673,9 +765,11 @@ self_heal_once() {
         fi
         log_event WARN "self_heal edge_unreachable code=${code:-0} bad_count=${bad_count} action=force_reconnect xhttp_probe=${xcode:-0} xhttp_probe_ms=${xms:-0}"
         mark_edge_reconnect_attempt
-        force_reconnect --no-prompt >/dev/null 2>&1 \
-            || log_event ERROR "self_heal force_reconnect_failed code=${code:-0}"
-        reset_edge_bad_count
+        if force_reconnect --no-prompt >/dev/null 2>&1; then
+            reset_edge_bad_count
+        else
+            log_event ERROR "self_heal force_reconnect_failed code=${code:-0}"
+        fi
         return 0
     fi
 
@@ -695,7 +789,13 @@ _background_tasks() {
     date +%s > "$BG_TASKS_HEARTBEAT_FILE" 2>/dev/null || true
     while true; do
         sleep 60
+        if ! background_supervisor_token_current; then
+            log_event WARN "background supervisor_superseded pid=$$"
+            exit 0
+        fi
         date +%s > "$BG_TASKS_HEARTBEAT_FILE" 2>/dev/null || true
+        rotate_log_file "$LOG_FILE"
+        rotate_log_file "$LOG_DIR/xray-error.log"
         if [[ "$PORT_DOMAIN" == unknown-codespace* ]]; then
             local n; n=$(_detect_codespace_name 2>/dev/null || true)
             if [[ -n "$n" && "$n" != "unknown-codespace" ]]; then
@@ -744,12 +844,15 @@ start_background_tasks() {
     fi
     if [[ -f "$BG_TASKS_PID" ]]; then
         local p; p=$(cat "$BG_TASKS_PID" 2>/dev/null || true)
-        if bg_tasks_running "$p" || legacy_bg_tasks_running "$p" || background_supervisor_heartbeat_running "$p"; then
-            if ( bg_tasks_running "$p" || background_supervisor_heartbeat_running "$p" ) && background_supervisor_version_matches; then
+        if bg_tasks_running "$p"; then
+            if background_supervisor_version_matches; then
                 release_bg_tasks_lock
                 return 0
             fi
             log_event WARN "background supervisor_stale pid=${p}"
+            stop_background_tasks
+        elif legacy_bg_tasks_running "$p"; then
+            log_event WARN "background legacy_supervisor_stale pid=${p}"
             stop_background_tasks
         fi
     fi
@@ -786,10 +889,10 @@ background_supervisor_version_matches() {
 stop_background_tasks() {
     local p
     p=$(cat "$BG_TASKS_PID" 2>/dev/null || true)
-    if bg_tasks_running "$p" || legacy_bg_tasks_running "$p" || background_supervisor_heartbeat_running "$p"; then
+    if bg_tasks_running "$p" || legacy_bg_tasks_running "$p"; then
         kill "$p" >/dev/null 2>&1 || true
         sleep 1
-        (bg_tasks_running "$p" || legacy_bg_tasks_running "$p" || background_supervisor_heartbeat_running "$p") && kill -9 "$p" >/dev/null 2>&1 || true
+        (bg_tasks_running "$p" || legacy_bg_tasks_running "$p") && kill -9 "$p" >/dev/null 2>&1 || true
     fi
     rm -f "$BG_TASKS_PID" "$BG_TASKS_VERSION_FILE" "$BG_TASKS_TOKEN_FILE" 2>/dev/null || true
 }
@@ -816,6 +919,12 @@ bg_tasks_running() {
     return 1
 }
 
+background_supervisor_token_current() {
+    local expected
+    expected=$(cat "$BG_TASKS_TOKEN_FILE" 2>/dev/null || true)
+    [[ -n "${G2RAY_BG_TASK_TOKEN:-}" && -n "$expected" && "$G2RAY_BG_TASK_TOKEN" == "$expected" ]]
+}
+
 background_supervisor_recent_heartbeat() {
     local hb now max_age="${1:-180}"
     hb=$(cat "$BG_TASKS_HEARTBEAT_FILE" 2>/dev/null || true)
@@ -827,7 +936,7 @@ background_supervisor_recent_heartbeat() {
 background_supervisor_heartbeat_running() {
     local p="${1:-}"
     [[ "$p" =~ ^[0-9]+$ ]] || return 1
-    kill -0 "$p" 2>/dev/null || return 1
+    bg_tasks_running "$p" || legacy_bg_tasks_running "$p" || return 1
     background_supervisor_recent_heartbeat
 }
 
@@ -864,21 +973,26 @@ format_bytes() {
 }
 
 estimate_quota() {
-    local prev ss now elapsed total rem h_used m_used h_left m_left dtime
+    local prev ss now elapsed total rem h_used m_used h_left m_left dtime quota_seconds quota_hours
+    reset_monthly_quota_if_needed
+    quota_seconds="${G2RAY_QUOTA_SECONDS:-216000}"
+    [[ "$quota_seconds" =~ ^[0-9]+$ && "$quota_seconds" -gt 0 ]] || quota_seconds=216000
+    quota_hours=$(( quota_seconds / 3600 ))
     prev=$(cat "$TOTAL_UPTIME_FILE" 2>/dev/null || echo 0)
     ss=$(cat "$SESSION_START_FILE" 2>/dev/null || date +%s)
     now=$(date +%s); elapsed=$(( now - ss ))
     (( elapsed < 0    )) && elapsed=0
     (( elapsed > 3600 )) && elapsed=3600
     total=$(( prev + elapsed ))
-    rem=$(( 216000 - total )); (( rem < 0 )) && rem=0
+    rem=$(( quota_seconds - total )); (( rem < 0 )) && rem=0
     h_used=$(( total / 3600 ));   m_used=$(( (total % 3600) / 60 ))
     h_left=$(( rem   / 3600 ));   m_left=$(( (rem   % 3600) / 60 ))
     dtime=$(date -d "+${rem} seconds" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "N/A")
-    echo -e "  ${GREEN}● Codespace Quota${NC}"
+    echo -e "  ${GREEN}● Local 2-core quota estimate${NC}"
     echo -e "  Total Used : ${WHITE}${h_used}h ${m_used}m${NC}"
-    echo -e "  Remaining  : ${GREEN}${h_left}h ${m_left}m${NC} ${DIM}(of 60h tier)${NC}"
+    echo -e "  Remaining  : ${GREEN}${h_left}h ${m_left}m${NC} ${DIM}(of local ${quota_hours}h estimate)${NC}"
     echo -e "  Depletion  : ${DIM}${dtime}${NC}"
+    echo -e "  ${DIM}GitHub billing is authoritative; 15 GB-month is storage quota, not traffic quota.${NC}"
 }
 
 show_resource_stats() {
@@ -1125,8 +1239,7 @@ show_diagnostics() {
 
     echo -e "\n  ${WHITE}${B}Codespaces Ports${NC}"
     if command -v gh >/dev/null 2>&1; then
-        GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 NO_COLOR=1 GH_FORCE_TTY=0 \
-            gh codespace ports -c "$CODESPACE_NAME" 2>/dev/null | sed 's/^/  /' \
+        run_gh codespace ports -c "$CODESPACE_NAME" 2>/dev/null | sed 's/^/  /' \
             || echo -e "  ${YELLOW}Could not query gh codespace ports.${NC}"
     else
         echo -e "  ${DIM}gh CLI unavailable.${NC}"
@@ -1141,6 +1254,9 @@ show_diagnostics() {
     echo -e "  Local OPTIONS : ${WHITE}HTTP ${local_probe}${NC} ${DIM}(${local_ms:-0}ms usable=${local_usable})${NC}"
     echo -e "  Edge OPTIONS  : ${WHITE}HTTP ${edge_probe}${NC} ${DIM}(${edge_ms:-0}ms usable=${edge_usable})${NC}"
     echo -e "  ${DIM}HTTP 404 here means the Codespaces edge has not routed this Host/path to Xray yet.${NC}"
+
+    echo -e "\n  ${WHITE}${B}Self-Heal State${NC}"
+    echo -e "  ${DIM}$(self_heal_state_summary)${NC}"
 
     echo -e "\n  ${WHITE}${B}Fallback IP Candidates${NC}"
     echo -e "  ${DIM}(includes resolved, manual, and built-in fallbacks)${NC}"
@@ -1227,7 +1343,7 @@ force_reconnect() {
     echo -ne "  ${DIM}╰─${NC} Verify External   : "
     local edge_reachable=false xhttp_route_usable=false code xcode xms
     for _i in 1 2 3 4; do
-        code=$(curl -s -m 5 -o /dev/null -w "%{http_code}" "https://${PORT_DOMAIN}" 2>/dev/null || echo "0")
+        code=$(curl_http_code "https://${PORT_DOMAIN}" 5)
         [[ "$code" != "000" && "$code" != "0" ]] && edge_reachable=true
         read -r xcode xms < <(xhttp_probe_metrics external)
         if xhttp_status_usable "$xcode"; then
@@ -1557,12 +1673,20 @@ while true; do
         13)
             refresh_screen
             echo -e "\n  ${GREEN}● Live Engine Logs${NC}"
+            rotate_log_file "$LOG_DIR/xray-error.log"
             if [[ -s "$LOG_DIR/xray.log" ]]; then
+                echo -e "  ${WHITE}${B}Runtime log${NC}"
                 tail -n 15 "$LOG_DIR/xray.log" | sed 's/^/  /'
             else
                 echo -e "  ${DIM}Log file empty or missing.${NC}"
             fi
-            echo -e "\n  ${DIM}(Log level: warning — empty log means no errors)${NC}\n"
+            echo -e "\n  ${WHITE}${B}Error log${NC}"
+            if [[ -s "$LOG_DIR/xray-error.log" ]]; then
+                tail -n 15 "$LOG_DIR/xray-error.log" | sed 's/^/  /'
+            else
+                echo -e "  ${DIM}No Xray errors logged.${NC}"
+            fi
+            echo -e "\n  ${DIM}(Xray access log is disabled; diagnostics shows probe and supervisor state.)${NC}\n"
             echo -ne "  ${DIM}Press Enter to return...${NC}"; read -r
             ;;
         14) show_diagnostics ;;

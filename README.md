@@ -30,7 +30,7 @@ https://github.com/user-attachments/assets/79174a4a-ef86-4c1d-9f1a-909d0b29a248
 
 G2ray is a powerful, interactive Bash panel designed to instantly deploy and manage Xray VLESS XHTTP configurations. Built specifically for the GitHub Codespaces environment, it automates port management, traffic monitoring, and connection keep-alives natively.
 
-> **Note:** The panel includes an advanced anti-sleep engine using Tmux to prevent your free-tier Codespace from hibernating while the proxy is in use.
+> **Note:** The panel includes a best-effort anti-sleep engine using Tmux while the Codespace is running. It cannot bypass GitHub quota limits, manual stops, or automatic deletion of stopped Codespaces.
 
 ---
 
@@ -52,10 +52,10 @@ https://raw.githubusercontent.com/Code-Leafy/G2rayXCodeLeafy/main/configs.txt
 Generate and start Xray engines in seconds. The beautiful menu-driven CLI interface makes managing nodes and viewing live config links effortless. 
 
 #### 🔄 Smart Auto-Keepalive
-Built-in background loops and advanced Tmux simulators prevent GitHub Codespaces from shutting down due to inactivity, keeping your tunnel open.
+Built-in background loops and Tmux keepalives reduce idle shutdowns while the Codespace is active. If GitHub stops, blocks, or deletes the Codespace, reopen it from GitHub Codespaces; the panel will auto-start and self-heal after the container starts again.
 
 #### 📡 Live Analytics & Quota
-Tracks real-time RX/TX data consumption and actively monitors resource usage (CPU/RAM). It accurately estimates your remaining 60-hour free-tier quota.
+Tracks real-time RX/TX traffic and resource usage (CPU/RAM). The quota panel is a local 2-core wall-clock estimate that resets by month; GitHub billing remains authoritative. GitHub's 15 GB-month allowance is storage quota, not traffic quota.
 
 #### 📦 Community Config Network
 Donate your generated config directly from the CLI to share access with the community. Donation shares the live VLESS link, including its UUID, Codespaces endpoint, and link label, so only donate configs you intentionally want public.
@@ -98,6 +98,10 @@ While G2ray is designed to be zero-config, advanced users can modify specific va
 - `G2RAY_MAX_FALLBACK_LINKS` **(Optional)** — Caps exported IP fallback links. Default: `3`.
 - `G2RAY_EDGE_RECONNECT_THRESHOLD` **(Optional)** — Number of consecutive unreachable edge checks before self-heal may run a full reconnect. Default: `3`.
 - `G2RAY_RECONNECT_COOLDOWN_SEC` **(Optional)** — Minimum seconds between automatic full reconnects. Default: `300`.
+- `G2RAY_GH_TIMEOUT_SEC` **(Optional)** — Maximum seconds for GitHub CLI control-plane calls. Default: `10`.
+- `G2RAY_LOG_MAX_BYTES` **(Optional)** — Maximum bytes per runtime log before rotation. Default: `1048576`.
+- `G2RAY_LOG_ROTATE_KEEP` **(Optional)** — Number of rotated log files to keep. Default: `3`.
+- `G2RAY_QUOTA_SECONDS` **(Optional)** — Local monthly quota estimate in seconds. Default: `216000` (60 wall-clock hours on a 2-core Codespace).
 
 Generated links include `allowInsecure=1` for compatibility with IP fallback links that still route through the Codespaces SNI/Host. This is a compatibility tradeoff: clients that honor the flag may relax TLS certificate verification.
 
@@ -151,7 +155,13 @@ G2rayXCodeLeafy/
 <summary><kbd>❓</kbd> FAQ & Troubleshooting</summary>
 
 **My Codespace keeps shutting down?**
-Ensure you have activated Option `7` in the G2ray panel (Toggle Anti-Sleep Mode) to spawn a background Tmux session that simulates user activity.
+Ensure you have activated Option `7` in the G2ray panel (Toggle Anti-Sleep Mode) to spawn a background Tmux session that simulates activity while the Codespace is running. This is best-effort: GitHub may still stop the Codespace when quota, budget, idle-timeout policy, or retention/deletion rules apply.
+
+**Will it restart after my monthly quota resets?**
+Not by itself while GitHub is blocking or stopping the Codespace, because no code runs inside a stopped Codespace. After the monthly included usage resets, reopen the Codespace from GitHub; `postStartCommand` runs `g2ray.sh --silent-start`, starts Xray, starts the supervisor, and refreshes exported configs.
+
+**Is the 15 GB limit my VPN data limit?**
+No. GitHub's 15 GB-month included allowance is Codespaces storage. The panel's RX/TX traffic counter measures tunnel traffic for your visibility, but it is not the same as the GitHub storage quota.
 
 **Why are my speeds slow?**
 For optimal routing, always try to ensure your GitHub Codespace region is set to `Europe West` in your GitHub account settings, as this places the server in NL/DE.

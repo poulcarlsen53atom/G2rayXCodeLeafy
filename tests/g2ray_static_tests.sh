@@ -422,6 +422,27 @@ test_self_heal_uses_reconnect_backoff() {
     pass 'self-heal reconnects are thresholded and cooled down'
 }
 
+test_probe_and_gh_commands_are_bounded() {
+    grep_fixed 'curl_http_code()' "$SCRIPT" \
+        || fail 'script has no helper to normalize curl transport failures'
+    grep_fixed 'printf '\''0'\''' "$SCRIPT" \
+        || fail 'curl_http_code does not normalize failed transports to a single 0'
+    if grep_fixed 'w "%{http_code}" "https://${PORT_DOMAIN}" 2>/dev/null || echo "0"' "$SCRIPT"; then
+        fail 'raw curl http_code probes can still emit 0000 on transport failure'
+    fi
+    grep_fixed 'run_gh()' "$SCRIPT" \
+        || fail 'script has no bounded gh helper'
+    grep_fixed 'timeout "${G2RAY_GH_TIMEOUT_SEC:-10}" gh' "$SCRIPT" \
+        || fail 'gh helper does not bound GitHub CLI calls with timeout'
+    grep_fixed 'run_gh codespace list --limit 1 --json name --jq' "$SCRIPT" \
+        || fail 'codespace name detection still bypasses the bounded gh helper'
+    grep_fixed 'run_gh codespace ports visibility "${XRAY_PORT}:public" -c "$CODESPACE_NAME"' "$SCRIPT" \
+        || fail 'port visibility still bypasses the bounded gh helper'
+    grep_fixed 'run_gh codespace ports -c "$CODESPACE_NAME"' "$SCRIPT" \
+        || fail 'diagnostics port query still bypasses the bounded gh helper'
+    pass 'curl probes and gh calls are bounded'
+}
+
 test_diagnostics_show_latency_and_supervisor_state() {
     grep_fixed 'xhttp_probe_metrics()' "$SCRIPT" \
         || fail 'diagnostics cannot measure XHTTP probe latency'
@@ -444,6 +465,31 @@ test_diagnostics_show_latency_and_supervisor_state() {
     grep_fixed 'ms' "$SCRIPT" \
         || fail 'diagnostics do not display latency in milliseconds'
     pass 'diagnostics show probe latency and supervisor state'
+}
+
+test_diagnostics_show_self_heal_state() {
+    grep_fixed 'self_heal_state_summary()' "$SCRIPT" \
+        || fail 'diagnostics cannot summarize self-heal counters'
+    grep_fixed 'Self-Heal State' "$SCRIPT" \
+        || fail 'diagnostics do not show self-heal state'
+    grep_fixed 'route_bad=' "$SCRIPT" \
+        || fail 'self-heal summary omits route failure streak'
+    grep_fixed 'edge_bad=' "$SCRIPT" \
+        || fail 'self-heal summary omits edge failure streak'
+    grep_fixed 'cooldown_remaining=' "$SCRIPT" \
+        || fail 'self-heal summary omits reconnect cooldown'
+    pass 'diagnostics show self-heal state'
+}
+
+test_background_supervisor_ownership_is_strict() {
+    grep_fixed 'background_supervisor_token_current()' "$SCRIPT" \
+        || fail 'background supervisor loop does not verify its token remains current'
+    grep_fixed 'supervisor_superseded' "$SCRIPT" \
+        || fail 'superseded background supervisors do not self-exit'
+    if grep_fixed 'legacy_bg_tasks_running "$p" || background_supervisor_heartbeat_running "$p"' "$SCRIPT"; then
+        fail 'supervisor lifecycle still trusts legacy/heartbeat ownership for reuse or kill decisions'
+    fi
+    pass 'background supervisor ownership is strict'
 }
 
 test_runtime_ready_rejects_started_but_unusable_route() {
@@ -481,6 +527,28 @@ test_runtime_files_are_private_and_tempfiles_are_unique() {
     grep_fixed 'mktemp "${TMPDIR:-/tmp}/g2ray_donate.XXXXXX"' "$SCRIPT" \
         || fail 'donation response does not stage through mktemp'
     pass 'runtime files are private and tempfiles are unique'
+}
+
+test_logs_are_bounded_and_quota_is_cycle_aware() {
+    grep_fixed 'rotate_log_file()' "$SCRIPT" \
+        || fail 'script has no log rotation helper'
+    grep_fixed 'G2RAY_LOG_MAX_BYTES' "$SCRIPT" \
+        || fail 'app log cap is not configurable'
+    grep_fixed 'rotate_log_file "$LOG_FILE"' "$SCRIPT" \
+        || fail 'g2ray app log is not capped'
+    grep_fixed 'rotate_log_file "$LOG_DIR/xray-error.log"' "$SCRIPT" \
+        || fail 'xray error log is not capped'
+    grep_fixed 'QUOTA_CYCLE_FILE=' "$SCRIPT" \
+        || fail 'quota estimate has no persisted billing cycle marker'
+    grep_fixed 'reset_monthly_quota_if_needed()' "$SCRIPT" \
+        || fail 'quota estimate is not monthly-cycle aware'
+    grep_fixed 'G2RAY_QUOTA_SECONDS' "$SCRIPT" \
+        || fail 'quota seconds are not configurable'
+    grep_fixed 'Local 2-core quota estimate' "$SCRIPT" \
+        || fail 'quota panel does not label itself as a local estimate'
+    grep_fixed 'storage quota, not traffic quota' "$README" \
+        || fail 'README does not distinguish GitHub storage quota from VPN traffic'
+    pass 'logs are bounded and quota estimate is cycle aware'
 }
 
 test_fallback_link_count_is_capped() {
@@ -632,9 +700,13 @@ test_xhttp_route_settling_is_observable
 test_runtime_control_paths_are_hardened
 test_startup_does_not_reconnect_healthy_runtime
 test_self_heal_uses_reconnect_backoff
+test_probe_and_gh_commands_are_bounded
 test_diagnostics_show_latency_and_supervisor_state
+test_diagnostics_show_self_heal_state
+test_background_supervisor_ownership_is_strict
 test_runtime_ready_rejects_started_but_unusable_route
 test_runtime_files_are_private_and_tempfiles_are_unique
+test_logs_are_bounded_and_quota_is_cycle_aware
 test_fallback_link_count_is_capped
 test_ci_runs_static_regressions
 test_docs_and_public_configs_are_consistent
