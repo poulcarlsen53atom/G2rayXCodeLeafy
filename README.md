@@ -4,11 +4,15 @@
 
 A sleek VLESS proxy manager for GitHub Codespaces.
 
-[![Version](https://img.shields.io/badge/version-1.4.3-2DC94E?style=flat-square)](https://github.com/Code-Leafy/G2rayXCodeLeafy)
-[![License](https://img.shields.io/badge/license-MIT-2DC94E?style=flat-square)](https://github.com/Code-Leafy/G2rayXCodeLeafy)
+[![Version](https://img.shields.io/badge/version-1.4.3-2DC94E?style=flat-square)](https://github.com/shayanay80atomic/G2rayXCodeLeafy)
+[![License](https://img.shields.io/badge/license-MIT-2DC94E?style=flat-square)](https://github.com/shayanay80atomic/G2rayXCodeLeafy)
 [![Status](https://img.shields.io/badge/status-stable-2DC94E?style=flat-square)]()
 
 </div>
+
+---
+
+> **Educational use only:** This project is provided for educational and research purposes. Use it only in ways that comply with applicable laws, GitHub Codespaces policies, network rules, and any services you connect to. You are responsible for your own usage.
 
 ---
 
@@ -39,7 +43,7 @@ G2ray is a powerful, interactive Bash panel designed to instantly deploy and man
 Want to use public nodes donated by other G2ray users? Import this raw newline-separated list into clients that support plain VLESS subscriptions:
 
 ```text
-https://raw.githubusercontent.com/Code-Leafy/G2rayXCodeLeafy/main/configs.txt
+https://raw.githubusercontent.com/shayanay80atomic/G2rayXCodeLeafy/main/configs.txt
 ```
 
 </details>
@@ -272,7 +276,7 @@ Codespace region affects the likely exit IP/country and latency. Set the desired
 
 <div align="center">
 
-> **⚠️ Educational Purpose Only:** This project is provided for educational and research purposes. Users are solely responsible for compliance with all local laws. The developer assumes no liability for misuse.
+> **Educational Purpose Only:** This project is provided for educational and research purposes. Users are solely responsible for compliance with applicable laws, platform policies, and network rules. The maintainers assume no liability for misuse.
 
-[MIT License](https://github.com/Code-Leafy/G2rayXCodeLeafy/blob/main/LICENSE) · Crafted by [Code-Leafy](https://github.com/Code-Leafy)
+[MIT License](https://github.com/shayanay80atomic/G2rayXCodeLeafy/blob/main/LICENSE) · Based on the Code-Leafy project
 </div>

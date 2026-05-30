@@ -9,6 +9,7 @@ tests/*.sh text eol=lf
 *.toml text eol=lf
 *.toml.example text eol=lf
 *.yml text eol=lf
+LICENSE text eol=lf
 .devcontainer/Dockerfile text eol=lf
 assets/message.txt text eol=lf
 .gitignore text eol=lf

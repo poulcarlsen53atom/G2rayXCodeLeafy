@@ -3,7 +3,7 @@ FROM debian:bookworm-slim
 ARG XRAY_VERSION=v26.5.9
 
 LABEL maintainer="G2rayXCodeLeafy" \
-      description="Made By CodeLeafy"
+      description="Educational G2rayXCodeLeafy Codespaces environment"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bash curl wget unzip ca-certificates sudo openssl uuid-runtime tmux tzdata \

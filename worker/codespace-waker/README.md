@@ -1,5 +1,7 @@
 # G2ray Codespace Waker
 
+Educational use only: this helper is provided for learning and recovery experiments. Use it only in ways that comply with applicable laws, GitHub Codespaces policies, Cloudflare policies, and network rules.
+
 This Cloudflare Worker gives you a private manual `/wake` endpoint that starts one GitHub Codespace through GitHub's official Codespaces API.
 
 It does not keep the Codespace alive forever and it cannot bypass quota, billing, deletion, or account restrictions.

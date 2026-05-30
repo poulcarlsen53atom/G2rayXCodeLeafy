@@ -4,6 +4,8 @@ set -euo pipefail
 
 readonly G2RAY_ID="G2ray Panel v1.4.3"
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_REPO="${G2RAY_PROJECT_REPO:-shayanay80atomic/G2rayXCodeLeafy}"
+RAW_BASE_URL="${G2RAY_RAW_BASE_URL:-https://raw.githubusercontent.com/${PROJECT_REPO}/main}"
 
 GREEN='\033[1;32m'; WHITE='\033[1;37m'; RED='\033[1;31m'
 YELLOW='\033[1;33m'; DIM='\033[2m'; NC='\033[0m'; B='\033[1m'
@@ -636,7 +638,7 @@ draw_logo() {
     echo -e "   ██║   ██║██╔═══╝ ██╔══██╗██╔══██║  ╚██╔╝  "
     echo -e "   ╚██████╔╝███████╗██║  ██║██║  ██║   ██║   "
     echo -e "    ╚═════╝ ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝   ${NC}"
-    echo -e "       ${WHITE}${B}v1.4.3${NC} ${DIM}•${NC} ${WHITE}Made by CodeLeafy${NC} ${DIM}•${NC} ${WHITE}Customized${NC}\n"
+    echo -e "       ${WHITE}${B}v1.4.3${NC} ${DIM}•${NC} ${WHITE}Educational use only${NC} ${DIM}•${NC} ${WHITE}Customized${NC}\n"
 }
 
 refresh_screen() {
@@ -654,7 +656,7 @@ check_for_updates() {
         sleep 1
         return 0
     }
-    curl -s -m 8 -L "https://raw.githubusercontent.com/Code-Leafy/G2rayXCodeLeafy/main/g2ray.sh" -o "$tmp" &
+    curl -s -m 8 -L "${RAW_BASE_URL}/g2ray.sh" -o "$tmp" &
     local pid=$! frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏") i=0
     while kill -0 "$pid" 2>/dev/null; do
         printf "\r  %b%s%b %bChecking for latest updates...%b" "$GREEN" "${frames[i]}" "$NC" "$WHITE" "$NC"
@@ -688,7 +690,7 @@ check_for_updates() {
 fetch_remote_message() {
     local tmp
     tmp=$(mktemp "${TMPDIR:-/tmp}/g2ray_msg.XXXXXX") || return 0
-    curl -s -m 4 "https://raw.githubusercontent.com/Code-Leafy/G2rayXCodeLeafy/main/assets/message.txt" \
+    curl -s -m 4 "${RAW_BASE_URL}/assets/message.txt" \
         > "$tmp" 2>/dev/null || true
     if [[ -s "$tmp" ]]; then
         mv -f "$tmp" "$REMOTE_MESSAGE_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
@@ -1878,6 +1880,7 @@ while true; do
 
     echo -e "  ${WHITE}${B}Engine Status  :${NC} $(echo -e "$_STATUS")"
     echo -e "  ${WHITE}${B}Anti-Sleep Mode:${NC} $(echo -e "$_KA")\n"
+    echo -e "  ${DIM}Educational/research use only. Follow local laws and platform rules.${NC}\n"
     echo -e "  ${WHITE}${B}● CORE CONTROLS${NC}"
     echo -e "   ${RED}1)${NC} View Config & QR Code       ${RED}4)${NC} Stop Engine"
     echo -e "   ${RED}2)${NC} Generate New Config         ${RED}5)${NC} Restart Engine"

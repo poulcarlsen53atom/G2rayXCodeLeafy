@@ -291,11 +291,11 @@ test_generated_links_include_domain_and_ip_variants() {
 test_terminal_branding_is_customized_red() {
     grep_fixed 'echo -e "${RED}${B}"' "$SCRIPT" \
         || fail 'logo banner is not rendered in red'
-    grep_fixed 'Made by CodeLeafy' "$SCRIPT" \
-        || fail 'logo banner no longer credits CodeLeafy'
+    grep_fixed 'Educational use only' "$SCRIPT" \
+        || fail 'logo banner does not show educational-use notice'
     grep_fixed 'Customized' "$SCRIPT" \
         || fail 'logo banner does not show customized branding'
-    pass 'terminal branding is red and customized'
+    pass 'terminal branding is red and educational-use labeled'
 }
 
 test_runtime_diagnostics_logging() {
