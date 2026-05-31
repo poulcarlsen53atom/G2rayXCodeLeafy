@@ -2760,7 +2760,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 check_for_updates "$@"
-record_resume_gap "interactive_attach"
+ensure_runtime_ready "interactive_attach" >/dev/null 2>&1 || true
 start_background_tasks
 fetch_remote_message
 enable_anti_sleep
@@ -2785,7 +2785,6 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
     fi
 else
     refresh_screen
-    ensure_runtime_ready "interactive_attach" >/dev/null 2>&1 || true
     maybe_prompt_waker_setup
 fi
 

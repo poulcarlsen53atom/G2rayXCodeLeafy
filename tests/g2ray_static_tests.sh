@@ -435,6 +435,17 @@ test_startup_does_not_reconnect_healthy_runtime() {
     pass 'startup paths do not reconnect a healthy runtime'
 }
 
+test_interactive_attach_readies_runtime_before_background_watchdog() {
+    awk '
+        /check_for_updates "\$@"/ { in_main=1; next }
+        in_main && /while true; do/ { exit }
+        in_main && /ensure_runtime_ready "interactive_attach"/ && !ready_line { ready_line=NR }
+        in_main && /start_background_tasks/ && !bg_line { bg_line=NR }
+        END { exit !(ready_line && bg_line && ready_line < bg_line) }
+    ' "$SCRIPT" || fail 'interactive attach can start the background self-heal watchdog before runtime readiness, causing competing Xray starts'
+    pass 'interactive attach readies runtime before background watchdog'
+}
+
 test_self_heal_uses_reconnect_backoff() {
     grep_fixed 'EDGE_BAD_COUNT_FILE=' "$SCRIPT" \
         || fail 'self-heal does not persist edge failure streaks'
@@ -540,8 +551,8 @@ test_diagnostics_show_resume_gap_state() {
         || fail 'resume gap detection does not log the startup reason'
     grep_fixed 'record_resume_gap "$reason"' "$SCRIPT" \
         || fail 'runtime readiness does not record resume gaps before healing'
-    grep_fixed 'record_resume_gap "interactive_attach"' "$SCRIPT" \
-        || fail 'interactive attach can refresh the heartbeat before recording resume gaps'
+    grep_fixed 'ensure_runtime_ready "interactive_attach" >/dev/null 2>&1 || true' "$SCRIPT" \
+        || fail 'interactive attach does not enter the resume-gap-aware runtime readiness path'
     pass 'diagnostics show resume gap state'
 }
 
@@ -1345,6 +1356,7 @@ test_runtime_diagnostics_logging
 test_xhttp_route_settling_is_observable
 test_runtime_control_paths_are_hardened
 test_startup_does_not_reconnect_healthy_runtime
+test_interactive_attach_readies_runtime_before_background_watchdog
 test_self_heal_uses_reconnect_backoff
 test_probe_and_gh_commands_are_bounded
 test_diagnostics_show_latency_and_supervisor_state
