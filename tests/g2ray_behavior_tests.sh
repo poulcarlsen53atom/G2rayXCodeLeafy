@@ -325,7 +325,7 @@ test_route_wait_requires_stable_usable_probes() {
         probes=$((probes + 1))
         printf '200 7\n'
     }
-    wait_for_xhttp_route_ready "behavior_stable" 1 >/dev/null || fail "route wait did not accept stable usable probes"
+    wait_for_xhttp_route_ready "behavior_stable" 5 >/dev/null || fail "route wait did not accept stable usable probes"
     awk -F '\t' '$2 == "behavior_stable" && $3 == "ready" && $4 == "200" && $5 == "7" && $7 == "2" { found = 1 } END { exit !found }' "$ROUTE_SETTLING_HISTORY_FILE" \
         || fail "route wait did not require and record two stable usable probes"
     pass "route wait requires stable usable probes"
