@@ -139,6 +139,8 @@ If you create a new Codespace, change region, rename/recreate the Codespace, or 
 - `route_ready: false` with HTTP `404`: the Codespace started, but the GitHub route has not settled yet.
 - `route_ready: false` with HTTP `0`: DNS, TLS, or the app route did not answer before the Worker timeout.
 - `next_action`: the fastest manual recovery step to try next.
+- `notification_status: "deferred"` / `notifications_deferred: true`: Discord or Telegram delivery is running after the response through Cloudflare `waitUntil`; check Worker logs if an alert does not arrive.
+- `notification_status: "failed"`: notification delivery was attempted synchronously and `notification_errors` contains the delivery error.
 - `401`: Wrong wake secret, or GitHub rejected the stored token. Check the JSON `error`, `reason`, or `token_warning` field to tell which side rejected the request.
 - `402`: GitHub quota or billing blocked the start. Wait for quota reset or adjust GitHub billing settings.
 - `403`: GitHub token is rejected, expired, or missing the right scope.

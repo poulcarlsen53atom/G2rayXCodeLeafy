@@ -62,6 +62,7 @@ async function handleWake(request, env, ctx) {
     ...data,
     history_enabled: Boolean(env.WAKER_KV),
     history_recorded: historyRecorded,
+    notification_status: notifications.status,
     notifications_deferred: notifications.deferred,
     notification_errors: notifications.errors
   }, responseStatusFor(data));
@@ -92,6 +93,7 @@ async function handleHealth(request, env, ctx) {
     ...data,
     history_enabled: Boolean(env.WAKER_KV),
     history_recorded: historyRecorded,
+    notification_status: notifications.status,
     notifications_deferred: notifications.deferred,
     notification_errors: notifications.errors
   }, responseStatusFor(data));
@@ -576,7 +578,7 @@ async function sendNotifications(env, event) {
 }
 
 async function queueNotifications(env, event, ctx) {
-  if (!shouldNotify(event)) return { deferred: false, errors: [] };
+  if (!shouldNotify(event)) return { status: "none", deferred: false, errors: [] };
 
   const task = sendNotifications(env, event).then((errors) => {
     if (errors.length) {
@@ -589,10 +591,11 @@ async function queueNotifications(env, event, ctx) {
     ctx.waitUntil(task.catch((error) => {
       console.warn("notification_failed", shortError(error));
     }));
-    return { deferred: true, errors: [] };
+    return { status: "deferred", deferred: true, errors: [] };
   }
 
-  return { deferred: false, errors: await task };
+  const errors = await task;
+  return { status: errors.length ? "failed" : "sent", deferred: false, errors };
 }
 
 function shouldNotify(event) {

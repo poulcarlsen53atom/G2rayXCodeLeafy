@@ -431,6 +431,28 @@ test_recover_now_json_reports_settling_contract() {
     pass "recover now json reports settling contract"
 }
 
+test_recover_now_json_treats_followup_ready_probe_as_success() {
+    (
+        reset_runtime_paths
+        CODESPACE_NAME="behavior-space"
+        PORT_DOMAIN="behavior-space-443.app.github.dev"
+        XRAY_PORT=443
+        recover_now() { return 1; }
+        xhttp_probe_metrics() { printf '200 9\n'; }
+        xray_running() { return 0; }
+        is_port_open() { return 0; }
+        output="$(recover_now_json)"
+        rc=$?
+        [[ "$rc" -eq 0 ]] || fail "ready follow-up probe should make recover_now_json exit zero, got $rc"
+        python -m json.tool <<< "$output" >/dev/null || fail "follow-up ready recover_now_json returned invalid JSON"
+        grep -Fq '"ok": true' <<< "$output" || fail "follow-up ready recover_now_json did not report ok=true"
+        grep -Fq '"status": "ready"' <<< "$output" || fail "follow-up ready recover_now_json did not report ready"
+        grep -Fq '"exit_code": 0' <<< "$output" || fail "follow-up ready recover_now_json did not expose final exit_code=0"
+        grep -Fq '"recover_exit_code": 1' <<< "$output" || fail "follow-up ready recover_now_json did not preserve recover_exit_code"
+    )
+    pass "recover now json treats follow-up ready probe as success"
+}
+
 test_diagnostic_snapshot_writes_readable_history() {
     reset_runtime_paths
     CODESPACE_NAME="behavior-space"
@@ -522,6 +544,36 @@ PY
     pass "support bundle redacts sensitive material"
 }
 
+test_support_bundle_handles_relative_log_dir() {
+    reset_runtime_paths
+    local cwd="$TMP_ROOT/relative-support-cwd"
+    mkdir -p "$cwd"
+    (
+        cd "$cwd"
+        LOG_DIR="relative-logs"
+        LOG_FILE="$LOG_DIR/g2ray.log"
+        STRUCTURED_LOG_FILE="$LOG_DIR/g2ray-events.jsonl"
+        DIAGNOSTIC_LOG_FILE="$LOG_DIR/g2ray-diagnostics.log"
+        mkdir -p "$LOG_DIR"
+        printf 'relative app log\n' > "$LOG_FILE"
+        printf '{"ts":"2026-05-30T00:00:00Z","level":"INFO","event":"test","message":"relative"}\n' > "$STRUCTURED_LOG_FILE"
+        printf 'relative diagnostic\n' > "$DIAGNOSTIC_LOG_FILE"
+        XRAY_BIN="$TMP_ROOT/missing-xray"
+        xray_running() { return 0; }
+        is_port_open() { return 0; }
+        xhttp_probe_metrics() { printf '200 1\n'; }
+        background_supervisor_status() { printf 'pid=1 running=heartbeat version=ok token=present heartbeat_age=1s\n'; }
+
+        local bundle
+        bundle="$(create_support_bundle)" || fail "support bundle failed with relative LOG_DIR"
+        [[ -s "$bundle" ]] || fail "relative support bundle archive is missing"
+        tar -tzf "$bundle" > "$TMP_ROOT/relative-support-list.txt"
+        grep -Fxq './logs/g2ray.log' "$TMP_ROOT/relative-support-list.txt" || grep -Fxq 'logs/g2ray.log' "$TMP_ROOT/relative-support-list.txt" \
+            || fail "relative support bundle is missing app log"
+    )
+    pass "support bundle handles relative log dir"
+}
+
 test_port_visibility_is_throttled
 test_port_visibility_cache_is_scoped_by_codespace_and_port
 test_cached_route_order_prefers_last_good_then_latency
@@ -541,6 +593,8 @@ test_route_wait_rejects_transient_single_success
 test_recover_now_success_clears_nonfatal_port_public_failure
 test_recover_now_json_reports_ready_contract
 test_recover_now_json_reports_settling_contract
+test_recover_now_json_treats_followup_ready_probe_as_success
 test_diagnostic_snapshot_writes_readable_history
 test_structured_log_jsonl_is_parseable_with_special_chars
 test_support_bundle_redacts_sensitive_material
+test_support_bundle_handles_relative_log_dir

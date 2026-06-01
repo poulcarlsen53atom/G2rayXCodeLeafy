@@ -2397,7 +2397,7 @@ create_support_bundle() {
     last_known_state_summary | redact_sensitive_text > "$tmp/runtime/last_known_state.txt" 2>/dev/null || true
 
     mkdir -p "$(dirname "$out")" 2>/dev/null || { rm -rf "$tmp"; return 1; }
-    if (cd "$tmp" && tar -czf "$out" .); then
+    if tar -C "$tmp" -czf "$out" .; then
         chmod 600 "$out" 2>/dev/null || true
         rm -rf "$tmp"
         log_event INFO "support_bundle created path=${out}"
@@ -2643,28 +2643,32 @@ recover_now() {
 }
 
 recover_now_json() {
-    local rc=0 xcode=0 xms=0 route_ready=false engine=false listener=false status next_action ok_bool=false
+    local recover_rc=0 rc=0 xcode=0 xms=0 route_ready=false engine=false listener=false status next_action ok_bool=false
     if recover_now --no-prompt >/dev/null 2>&1; then
-        rc=0
+        recover_rc=0
     else
-        rc=$?
+        recover_rc=$?
     fi
     read -r xcode xms < <(xhttp_probe_metrics external)
     if xhttp_status_usable "$xcode"; then
         route_ready=true
         status="ready"
         next_action="Try the same VLESS config again."
+        rc=0
     elif [[ "$xcode" == "404" ]]; then
         status="settling"
         next_action="Wait and retry health, or open the panel and run Recover Now if it stays stuck."
+        rc="$recover_rc"
     else
         status="failed"
         next_action="Open diagnostics and inspect the support bundle logs."
+        rc="$recover_rc"
     fi
+    [[ "$route_ready" != true && "$rc" -eq 0 ]] && rc=1
     xray_running && engine=true
     is_port_open && listener=true
     [[ "$route_ready" == true && "$rc" -eq 0 ]] && ok_bool=true
-    log_event INFO "recover_now_json requested ok=${ok_bool} status=${status} route_ready=${route_ready} xhttp_probe=${xcode:-0} xhttp_probe_ms=${xms:-0} rc=${rc}"
+    log_event INFO "recover_now_json requested ok=${ok_bool} status=${status} route_ready=${route_ready} xhttp_probe=${xcode:-0} xhttp_probe_ms=${xms:-0} rc=${rc} recover_rc=${recover_rc}"
     cat <<JSON
 {
   "ok": ${ok_bool},
@@ -2674,6 +2678,7 @@ recover_now_json() {
   "listener_open": ${listener},
   "edge_probe": {"http_status": ${xcode:-0}, "latency_ms": ${xms:-0}, "usable": $(xhttp_status_usable "$xcode" && printf true || printf false)},
   "exit_code": ${rc},
+  "recover_exit_code": ${recover_rc},
   "next_action": "$(json_escape "$next_action")",
   "log_file": "$(json_escape "$LOG_FILE")",
   "structured_log_file": "$(json_escape "$STRUCTURED_LOG_FILE")",

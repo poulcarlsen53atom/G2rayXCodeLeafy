@@ -274,6 +274,7 @@ async function testWakeQueuesNotificationsWithWaitUntil() {
   const body = await responseJson(response);
   assert.equal(response.status, 200);
   assert.equal(body.route_ready, true);
+  assert.equal(body.notification_status, "deferred");
   assert.equal(body.notifications_deferred, true);
   assert.deepEqual(body.notification_errors, []);
   assert.equal(waitUntilPromises.length, 1);
@@ -281,6 +282,61 @@ async function testWakeQueuesNotificationsWithWaitUntil() {
   assert.equal(routeCalls >= 2, true);
   assert.equal(notificationCalls, 1);
   console.log("PASS: Worker queues notifications with waitUntil");
+}
+
+async function testDeferredNotificationFailureIsMarkedDeferred() {
+  let routeCalls = 0;
+  let notificationCalls = 0;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/start")) {
+      return new Response(JSON.stringify({
+        state: "Available"
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    if (url.includes("api.github.com")) {
+      return new Response(JSON.stringify({
+        name: "behavior-space",
+        state: "Available",
+        pending_operation: false,
+        last_used_at: "2026-05-30T00:00:00Z",
+        idle_timeout_minutes: 240
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    if (url.includes("app.github.dev")) {
+      routeCalls += 1;
+      return new Response("", { status: 200 });
+    }
+    if (url.includes("discord.example")) {
+      notificationCalls += 1;
+      return new Response("bad webhook", { status: 500 });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  const waitUntilPromises = [];
+  const response = await worker.fetch(
+    makeRequest("/api/wake"),
+    baseEnv({ DISCORD_WEBHOOK_URL: "https://discord.example/hook" }),
+    { waitUntil(promise) { waitUntilPromises.push(promise); } }
+  );
+  const body = await responseJson(response);
+  assert.equal(response.status, 200);
+  assert.equal(body.route_ready, true);
+  assert.equal(body.notification_status, "deferred");
+  assert.equal(body.notifications_deferred, true);
+  assert.deepEqual(body.notification_errors, []);
+  assert.equal(waitUntilPromises.length, 1);
+  await Promise.all(waitUntilPromises);
+  assert.equal(routeCalls >= 2, true);
+  assert.equal(notificationCalls, 1);
+  console.log("PASS: Worker marks deferred notification failures as deferred");
 }
 
 try {
@@ -294,6 +350,7 @@ try {
   await testHistoryRejectsBadSecretClearly();
   await testResponsesIncludeSecurityHeaders();
   await testWakeQueuesNotificationsWithWaitUntil();
+  await testDeferredNotificationFailureIsMarkedDeferred();
 } finally {
   globalThis.fetch = originalFetch;
 }

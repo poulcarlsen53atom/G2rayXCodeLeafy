@@ -872,8 +872,12 @@ test_soft_recovery_and_route_memory_are_present() {
         || fail 'headless recover command is not wired'
     grep_fixed 'recover_now_json()' "$SCRIPT" \
         || fail 'machine-readable recover JSON renderer is missing'
+    grep_fixed 'recover_exit_code' "$SCRIPT" \
+        || fail 'machine-readable recover JSON does not preserve the internal recovery exit code'
     grep_fixed 'recover_now --no-prompt >/dev/null 2>&1' "$SCRIPT" \
         || fail 'machine-readable recover command does not suppress human terminal output'
+    grep_fixed 'tar -C "$tmp" -czf "$out" .' "$SCRIPT" \
+        || fail 'support bundle archive creation is not safe for relative output paths'
     grep_fixed '--doctor-json' "$SCRIPT" \
         || fail 'panel has no headless doctor JSON command'
     grep_fixed 'print_doctor_json()' "$SCRIPT" \
@@ -1105,6 +1109,8 @@ test_docs_cover_panel_waker_setup() {
         || fail 'Worker README does not clarify Worker secret binding types'
     grep_fixed 'route_ready: false` with HTTP `404`' "$WORKER_README" \
         || fail 'Worker README does not explain the route-settling response'
+    grep_fixed 'notification_status: "deferred"' "$WORKER_README" \
+        || fail 'Worker README does not explain deferred notification status'
     grep_fixed 'VS Code Desktop' "$README" \
         || fail 'README does not mention VS Code Desktop fallback for slow browser Codespaces'
     pass 'docs cover panel waker setup'
