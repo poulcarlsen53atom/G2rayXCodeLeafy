@@ -840,8 +840,11 @@ show_recovery_command_card() {
     echo -e "  ${GREEN}bash ./g2ray.sh --recover-now --json${NC}"
     echo -e "  ${GREEN}bash ./g2ray.sh --support-bundle${NC}"
     if [[ -n "$worker_url" ]]; then
+        echo -e "  ${DIM}Linux/macOS:${NC}"
         echo -e "  ${GREEN}curl -X POST -H \"Authorization: Bearer <WAKE_SECRET>\" \"${worker_url}\"${NC}"
-        echo -e "  ${DIM}For PowerShell, keep the URL the same and replace <WAKE_SECRET> manually.${NC}"
+        echo -e "  ${DIM}Windows PowerShell:${NC}"
+        echo -e "  ${GREEN}Invoke-RestMethod -Method Post -Headers @{Authorization=\"Bearer <WAKE_SECRET>\"} -Uri \"${worker_url}\"${NC}"
+        echo -e "  ${DIM}Or use curl.exe instead of curl in PowerShell if you prefer curl syntax.${NC}"
     else
         echo -e "  ${DIM}Worker wake command appears here after option 15 is configured.${NC}"
     fi
@@ -2348,11 +2351,25 @@ copy_redacted_file() {
     local src="$1" dst="$2"
     mkdir -p "$(dirname "$dst")" 2>/dev/null || true
     if [[ -f "$src" ]]; then
-        redact_sensitive_text < "$src" > "$dst" 2>/dev/null || return 1
+        if [[ -r "$src" ]] && redact_sensitive_text < "$src" > "$dst" 2>/dev/null; then
+            :
+        else
+            printf 'unreadable: %s\n' "$src" > "$dst" 2>/dev/null || true
+        fi
     else
         printf 'missing: %s\n' "$src" > "$dst"
     fi
     chmod 600 "$dst" 2>/dev/null || true
+}
+
+copy_redacted_log_family() {
+    local src="$1" dst="$2" keep="$LOG_ROTATE_KEEP" i
+    [[ "$keep" =~ ^[0-9]+$ && "$keep" -gt 0 ]] || keep=3
+    copy_redacted_file "$src" "$dst"
+    for ((i=1; i<=keep; i++)); do
+        [[ -e "${src}.${i}" ]] || continue
+        copy_redacted_file "${src}.${i}" "${dst}.${i}"
+    done
 }
 
 create_support_bundle() {
@@ -2380,11 +2397,11 @@ create_support_bundle() {
     } | redact_sensitive_text > "$tmp/metadata.txt"
 
     print_doctor_json | redact_sensitive_text > "$tmp/doctor.json" 2>/dev/null || printf '{}\n' > "$tmp/doctor.json"
-    copy_redacted_file "$LOG_FILE" "$tmp/logs/g2ray.log"
-    copy_redacted_file "$STRUCTURED_LOG_FILE" "$tmp/logs/g2ray-events.jsonl"
-    copy_redacted_file "$DIAGNOSTIC_LOG_FILE" "$tmp/logs/g2ray-diagnostics.log"
-    copy_redacted_file "$LOG_DIR/xray.log" "$tmp/logs/xray.log"
-    copy_redacted_file "$LOG_DIR/xray-error.log" "$tmp/logs/xray-error.log"
+    copy_redacted_log_family "$LOG_FILE" "$tmp/logs/g2ray.log"
+    copy_redacted_log_family "$STRUCTURED_LOG_FILE" "$tmp/logs/g2ray-events.jsonl"
+    copy_redacted_log_family "$DIAGNOSTIC_LOG_FILE" "$tmp/logs/g2ray-diagnostics.log"
+    copy_redacted_log_family "$LOG_DIR/xray.log" "$tmp/logs/xray.log"
+    copy_redacted_log_family "$LOG_DIR/xray-error.log" "$tmp/logs/xray-error.log"
     copy_redacted_file "$ROUTE_HEALTH_FILE" "$tmp/state/route_candidate_health.tsv"
     copy_redacted_file "$LAST_GOOD_ROUTE_FILE" "$tmp/state/last_good_route.txt"
     copy_redacted_file "$ROUTE_SETTLING_HISTORY_FILE" "$tmp/state/route_settling_history.tsv"

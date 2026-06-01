@@ -204,7 +204,7 @@ bash ./g2ray.sh --support-bundle
 
 `--recover-now` is non-interactive and soft-only: it verifies/starts Xray, reasserts public port visibility, waits for route readiness, refreshes route candidates, and refreshes exported configs. If the route is still settling, it can exit nonzero; open the interactive panel and use option `6) Recover Now` if you want the hard restart prompt.
 
-`--recover-now --json` runs the same soft recovery path but prints a machine-readable result with `status`, `route_ready`, `edge_probe`, and `next_action` fields for VPS scripts or automation.
+`--recover-now --json` runs the same soft recovery path but prints a machine-readable result with `status`, `route_ready`, `edge_probe`, and `next_action` fields. It is for automation already running inside the Codespace after the Codespace has been started or attached. External VPS automation cannot run this command inside a stopped Codespace; use the Cloudflare Worker wake endpoint or GitHub Codespaces API first, then use this command from inside the Codespace if local route recovery is still needed.
 
 `--support-bundle` creates a redacted `.tar.gz` support bundle under `logs/`. It includes doctor JSON, diagnostics, structured event logs, route health, route-settling history, and Xray logs while redacting VLESS links, UUIDs, bearer tokens, GitHub tokens, and wake secrets.
 
@@ -279,6 +279,20 @@ Wake call:
 read -rsp "Wake secret: " WAKE_SECRET; echo
 curl -X POST -H "Authorization: Bearer ${WAKE_SECRET}" https://YOUR_WORKER.workers.dev/wake
 unset WAKE_SECRET
+```
+
+PowerShell wake call:
+
+```powershell
+$wake = Read-Host -AsSecureString "Wake secret"
+$ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($wake)
+try {
+  $plainWake = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)
+  Invoke-RestMethod -Method Post -Headers @{Authorization="Bearer $plainWake"} -Uri "https://YOUR_WORKER.workers.dev/wake"
+} finally {
+  [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
+  Remove-Variable wake, ptr, plainWake -ErrorAction SilentlyContinue
+}
 ```
 
 The browser form is preferred because it keeps the wake secret out of shell history. See `worker/codespace-waker/README.md` for the full setup and token guidance.

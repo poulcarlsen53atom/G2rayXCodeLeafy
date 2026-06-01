@@ -542,6 +542,7 @@ function historyKey(codespace) {
 
 async function sendNotifications(env, event) {
   if (!shouldNotify(event)) return [];
+  if (!hasNotificationChannels(env)) return [];
 
   const text = notificationText(event);
   const tasks = [];
@@ -579,6 +580,7 @@ async function sendNotifications(env, event) {
 
 async function queueNotifications(env, event, ctx) {
   if (!shouldNotify(event)) return { status: "none", deferred: false, errors: [] };
+  if (!hasNotificationChannels(env)) return { status: "none", deferred: false, errors: [] };
 
   const task = sendNotifications(env, event).then((errors) => {
     if (errors.length) {
@@ -596,6 +598,10 @@ async function queueNotifications(env, event, ctx) {
 
   const errors = await task;
   return { status: errors.length ? "failed" : "sent", deferred: false, errors };
+}
+
+function hasNotificationChannels(env) {
+  return Boolean(env.DISCORD_WEBHOOK_URL || (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID));
 }
 
 function shouldNotify(event) {

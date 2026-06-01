@@ -284,6 +284,95 @@ async function testWakeQueuesNotificationsWithWaitUntil() {
   console.log("PASS: Worker queues notifications with waitUntil");
 }
 
+async function testWakeReportsNoNotificationsWhenChannelsAreUnconfigured() {
+  let routeCalls = 0;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/start")) {
+      return new Response(JSON.stringify({
+        state: "Available"
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    if (url.includes("api.github.com")) {
+      return new Response(JSON.stringify({
+        name: "behavior-space",
+        state: "Available",
+        pending_operation: false,
+        last_used_at: "2026-05-30T00:00:00Z",
+        idle_timeout_minutes: 240
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    if (url.includes("app.github.dev")) {
+      routeCalls += 1;
+      return new Response("", { status: 200 });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  const waitUntilPromises = [];
+  const response = await worker.fetch(
+    makeRequest("/api/wake"),
+    baseEnv(),
+    { waitUntil(promise) { waitUntilPromises.push(promise); } }
+  );
+  const body = await responseJson(response);
+  assert.equal(response.status, 200);
+  assert.equal(body.route_ready, true);
+  assert.equal(body.notification_status, "none");
+  assert.equal(body.notifications_deferred, false);
+  assert.deepEqual(body.notification_errors, []);
+  assert.equal(waitUntilPromises.length, 0);
+  assert.equal(routeCalls >= 2, true);
+  console.log("PASS: Worker reports no notifications when channels are unconfigured");
+}
+
+async function testHealthQueuesTokenFailureNotificationWithWaitUntil() {
+  let routeCalls = 0;
+  let notificationCalls = 0;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("api.github.com")) {
+      return new Response(JSON.stringify({ message: "Bad credentials" }), {
+        status: 401,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    if (url.includes("app.github.dev")) {
+      routeCalls += 1;
+      return new Response("", { status: 404 });
+    }
+    if (url.includes("discord.example")) {
+      notificationCalls += 1;
+      return new Response("", { status: 200 });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  const waitUntilPromises = [];
+  const response = await worker.fetch(
+    makeRequest("/api/health"),
+    baseEnv({ DISCORD_WEBHOOK_URL: "https://discord.example/hook" }),
+    { waitUntil(promise) { waitUntilPromises.push(promise); } }
+  );
+  const body = await responseJson(response);
+  assert.equal(response.status, 401);
+  assert.equal(body.reason, "github_token_rejected_or_missing_scope");
+  assert.equal(body.notification_status, "deferred");
+  assert.equal(body.notifications_deferred, true);
+  assert.deepEqual(body.notification_errors, []);
+  assert.equal(waitUntilPromises.length, 1);
+  await Promise.all(waitUntilPromises);
+  assert.equal(routeCalls, 1);
+  assert.equal(notificationCalls, 1);
+  console.log("PASS: Worker queues health token-failure notifications with waitUntil");
+}
+
 async function testDeferredNotificationFailureIsMarkedDeferred() {
   let routeCalls = 0;
   let notificationCalls = 0;
@@ -350,6 +439,8 @@ try {
   await testHistoryRejectsBadSecretClearly();
   await testResponsesIncludeSecurityHeaders();
   await testWakeQueuesNotificationsWithWaitUntil();
+  await testWakeReportsNoNotificationsWhenChannelsAreUnconfigured();
+  await testHealthQueuesTokenFailureNotificationWithWaitUntil();
   await testDeferredNotificationFailureIsMarkedDeferred();
 } finally {
   globalThis.fetch = originalFetch;

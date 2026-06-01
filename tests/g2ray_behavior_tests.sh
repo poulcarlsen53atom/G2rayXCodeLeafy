@@ -574,6 +574,68 @@ test_support_bundle_handles_relative_log_dir() {
     pass "support bundle handles relative log dir"
 }
 
+test_support_bundle_includes_rotated_logs() {
+    reset_runtime_paths
+    printf 'live app log\n' > "$LOG_FILE"
+    printf 'rotated app log\n' > "$LOG_FILE.1"
+    printf '{"ts":"2026-05-30T00:00:00Z","level":"INFO","event":"live","message":"live"}\n' > "$STRUCTURED_LOG_FILE"
+    printf '{"ts":"2026-05-29T00:00:00Z","level":"WARN","event":"old","message":"rotated"}\n' > "$STRUCTURED_LOG_FILE.1"
+    printf 'live diagnostic\n' > "$DIAGNOSTIC_LOG_FILE"
+    printf 'rotated diagnostic\n' > "$DIAGNOSTIC_LOG_FILE.1"
+    printf 'xray live\n' > "$LOG_DIR/xray.log"
+    printf 'xray rotated\n' > "$LOG_DIR/xray.log.1"
+    printf 'xray error live\n' > "$LOG_DIR/xray-error.log"
+    printf 'xray error rotated\n' > "$LOG_DIR/xray-error.log.1"
+    XRAY_BIN="$TMP_ROOT/missing-xray"
+    xray_running() { return 0; }
+    is_port_open() { return 0; }
+    xhttp_probe_metrics() { printf '200 1\n'; }
+    background_supervisor_status() { printf 'pid=1 running=heartbeat version=ok token=present heartbeat_age=1s\n'; }
+
+    local bundle extract
+    bundle="$(create_support_bundle)" || fail "support bundle creation failed with rotated logs"
+    extract="$TMP_ROOT/support-rotated-extract"
+    mkdir -p "$extract"
+    tar -xzf "$bundle" -C "$extract"
+    [[ -s "$extract/logs/g2ray.log.1" ]] || fail "support bundle missing rotated app log"
+    [[ -s "$extract/logs/g2ray-events.jsonl.1" ]] || fail "support bundle missing rotated event log"
+    [[ -s "$extract/logs/g2ray-diagnostics.log.1" ]] || fail "support bundle missing rotated diagnostics log"
+    [[ -s "$extract/logs/xray.log.1" ]] || fail "support bundle missing rotated Xray log"
+    [[ -s "$extract/logs/xray-error.log.1" ]] || fail "support bundle missing rotated Xray error log"
+    pass "support bundle includes rotated logs"
+}
+
+test_support_bundle_marks_unreadable_optional_logs() {
+    reset_runtime_paths
+    printf 'live app log\n' > "$LOG_FILE"
+    printf '{"ts":"2026-05-30T00:00:00Z","level":"INFO","event":"live","message":"live"}\n' > "$STRUCTURED_LOG_FILE"
+    printf 'live diagnostic\n' > "$DIAGNOSTIC_LOG_FILE"
+    printf 'root-owned style xray log\n' > "$LOG_DIR/xray.log"
+    chmod 000 "$LOG_DIR/xray.log" 2>/dev/null || true
+    XRAY_BIN="$TMP_ROOT/missing-xray"
+    xray_running() { return 0; }
+    is_port_open() { return 0; }
+    xhttp_probe_metrics() { printf '200 1\n'; }
+    background_supervisor_status() { printf 'pid=1 running=heartbeat version=ok token=present heartbeat_age=1s\n'; }
+
+    local bundle extract
+    bundle="$(create_support_bundle)" || {
+        chmod 600 "$LOG_DIR/xray.log" 2>/dev/null || true
+        fail "support bundle failed with unreadable optional log"
+    }
+    chmod 600 "$LOG_DIR/xray.log" 2>/dev/null || true
+    extract="$TMP_ROOT/support-unreadable-extract"
+    mkdir -p "$extract"
+    tar -xzf "$bundle" -C "$extract"
+    [[ -s "$extract/logs/xray.log" ]] || fail "support bundle missing marker for unreadable optional log"
+    if [[ -r "$LOG_DIR/xray.log" ]]; then
+        grep -Fq 'root-owned style xray log' "$extract/logs/xray.log" || fail "support bundle did not copy readable xray log"
+    else
+        grep -Fq 'unreadable:' "$extract/logs/xray.log" || fail "support bundle did not mark unreadable optional log"
+    fi
+    pass "support bundle marks unreadable optional logs"
+}
+
 test_port_visibility_is_throttled
 test_port_visibility_cache_is_scoped_by_codespace_and_port
 test_cached_route_order_prefers_last_good_then_latency
@@ -598,3 +660,5 @@ test_diagnostic_snapshot_writes_readable_history
 test_structured_log_jsonl_is_parseable_with_special_chars
 test_support_bundle_redacts_sensitive_material
 test_support_bundle_handles_relative_log_dir
+test_support_bundle_includes_rotated_logs
+test_support_bundle_marks_unreadable_optional_logs
