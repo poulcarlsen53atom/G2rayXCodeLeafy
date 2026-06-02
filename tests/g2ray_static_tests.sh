@@ -1401,8 +1401,12 @@ test_docs_and_public_configs_are_consistent() {
         || fail 'README does not disclose what donation shares'
     grep_fixed 'This shares your live VLESS link publicly.' "$SCRIPT" \
         || fail 'CLI donation prompt does not disclose that it shares the live VLESS link'
-    grep_fixed 'allowInsecure=1' "$README" \
-        || fail 'README does not disclose the TLS verification tradeoff in exported links'
+    grep_fixed 'insecure=0&allowInsecure=0' "$README" \
+        || fail 'README does not document secure-by-default TLS verification in exported links'
+    grep_fixed 'insecure=0&allowInsecure=0' "$SCRIPT" \
+        || fail 'generated links are not secure-by-default for TLS verification'
+    grep_fixed 'allowInsecure=1` can be tried manually as a compatibility workaround' "$README" \
+        || fail 'README does not disclose the optional TLS verification compatibility tradeoff'
     awk 'NF && seen[$0]++ { dup=1 } END { exit dup ? 1 : 0 }' "$CONFIGS" \
         || fail 'configs.txt contains duplicate non-empty VLESS entries'
     pass 'docs and public configs are consistent'

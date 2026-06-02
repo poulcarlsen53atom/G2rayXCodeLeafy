@@ -127,7 +127,7 @@ While G2ray is designed to be zero-config, advanced users can modify specific va
 - `G2RAY_LOG_ROTATE_KEEP` **(Optional)** — Number of rotated log files to keep. Default: `3`.
 - `G2RAY_QUOTA_SECONDS` **(Optional)** — Local monthly quota estimate in seconds. Default: `216000` (60 wall-clock hours on a 2-core Codespace).
 
-Generated links include `allowInsecure=1` for compatibility with IP fallback links that still route through the Codespaces SNI/Host. This is a compatibility tradeoff: clients that honor the flag may relax TLS certificate verification.
+Generated links use `insecure=0&allowInsecure=0` by default so clients keep TLS certificate verification enabled. If a specific client cannot handle IP fallback links with SNI/Host routing, `allowInsecure=1` can be tried manually as a compatibility workaround, but that relaxes certificate verification and is not the default.
 
 By default the panel can export up to 20 usable IP fallback configs plus the domain config, ordered by rolling route health: success ratio, average successful XHTTP latency, and latest XHTTP latency. These numbers are `OPTIONS` probes against the Codespaces XHTTP route, not ICMP ping or full throughput tests. If GitHub/DNS exposes fewer healthy unique edge routes, the panel exports fewer rather than duplicating weak or unusable routes.
 
