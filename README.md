@@ -120,6 +120,7 @@ While G2ray is designed to be zero-config, advanced users can modify specific va
 - `G2RAY_ROUTE_HEALTH_TTL_SEC` **(Optional)** — Seconds cached route health can be reused to order exported configs before refreshing. Default: `300`.
 - `G2RAY_ROUTE_PROBE_CONCURRENCY` **(Optional)** — Maximum parallel route candidate probes during a route-health refresh. Default: `4`, hard-capped at `8`.
 - `G2RAY_ROUTE_FAILURE_COOLDOWN_SEC` **(Optional)** — Seconds to temporarily skip candidates that timed out or returned edge/origin errors. Default: `180`.
+- `G2RAY_LAST_GOOD_ROUTE_MAX_AGE_SEC` **(Optional)** — Seconds a last-good route can break ties in exported config ordering. Default: `1800`; set `0` to disable last-good tie preference.
 - `G2RAY_PERFORMANCE_PROFILE` **(Optional)** — Config profile used when generating a new Xray config: `balanced` (default), `low_latency`, `streaming`, `unstable_mobile`, or `low_overhead`.
 - `G2RAY_LOW_OVERHEAD=1` **(Optional)** — Starts the panel in low-overhead mode, reducing INFO logs and less-essential background route/export refreshes. You can also toggle this from option `18`.
 - `G2RAY_LATENCY_FOCUS=1` **(Optional)** — Starts the panel in latency-focus mode, keeping heartbeat/self-heal active while suppressing noncritical logs and minimizing background route/export refreshes. You can also toggle this from option `49`.
@@ -217,11 +218,14 @@ bash ./g2ray.sh --support-bundle
 bash ./g2ray.sh --print-subscription-url
 bash ./g2ray.sh publish-subscription --yes --push
 bash ./g2ray.sh latency-focus on
+bash ./g2ray.sh bench --json --mock
 ```
 
 `--recover-now` is non-interactive and soft-only: it verifies/starts Xray, reasserts public port visibility, waits for route readiness, refreshes route candidates, and refreshes exported configs. If the route is still settling, it can exit nonzero; open the interactive panel and use option `6) Recover Now` if you want the hard restart prompt.
 
 `--recover-now --json` runs the same soft recovery path but prints a machine-readable result with `status`, `route_ready`, `edge_probe`, and `next_action` fields. It is for automation already running inside the Codespace after the Codespace has been started or attached. External VPS automation cannot run this command inside a stopped Codespace; use the Cloudflare Worker wake endpoint or GitHub Codespaces API first, then use this command from inside the Codespace if local route recovery is still needed.
+
+`bench --json --mock` runs isolated mocked performance budget checks for the panel hot paths: cached XHTTP config parsing, route ordering, export generation, doctor JSON, and recover JSON. It does not probe the live network and it writes only to a temporary runtime directory, so CI can use it as a deterministic regression guard without touching your real `data/` or `logs/` state.
 
 `--support-bundle` creates a redacted `.tar.gz` support bundle under `logs/`. It includes doctor JSON, diagnostics, structured event logs, route health, rolling route stats, route-settling history, and Xray logs while redacting VLESS links, UUIDs, bearer tokens, GitHub tokens, and wake secrets.
 
@@ -288,8 +292,9 @@ Optional Cloudflare dashboard bindings:
 - `TELEGRAM_CHAT_ID`: **Secret** variable for Telegram alerts.
 - `WAKE_COOLDOWN_SECONDS`: **Plaintext** optional seconds to prevent repeated successful wake requests from spamming GitHub when KV is configured. Leave unset for no successful-wake cooldown. Any nonzero value below `60` is treated as `60` because Cloudflare KV expiration TTLs require at least 60 seconds.
 - `ROUTE_POLL_AFTER_SECONDS`: **Plaintext** optional browser/API retry hint while the route is settling. Default: `5`.
+- `HEALTH_HISTORY_SAMPLE_MS`: **Plaintext** optional health-history sampling window for identical dashboard health polls when KV is configured. Default: `300000` (5 minutes); set `0` to keep only changed health states and transition events.
 
-With `WAKER_KV`, the Worker records quota-block incidents: first `HTTP 402`, latest `HTTP 402`, last successful wake/health check, and whether the same Codespace still appears accessible. It can also enforce optional `WAKE_COOLDOWN_SECONDS` after a successful wake. With `QUOTA_SURVIVAL_CRON_ENABLED=true`, a Cloudflare Cron Trigger can check this state conservatively; it does not bypass quota and does not try repeated starts until the estimated monthly reset window.
+With `WAKER_KV`, the Worker records quota-block incidents: first `HTTP 402`, latest `HTTP 402`, last successful wake/health check, and whether the same Codespace still appears accessible. It also samples duplicate health polls so the dashboard history stays readable, and a later health check can send one route-ready transition alert after a previously stuck route becomes usable. It can also enforce optional `WAKE_COOLDOWN_SECONDS` after a successful wake. With `QUOTA_SURVIVAL_CRON_ENABLED=true`, a Cloudflare Cron Trigger can check this state conservatively; it does not bypass quota and does not try repeated starts until the estimated monthly reset window.
 
 The Worker URL can be entered with or without `https://`, and with or without `/wake`; the panel normalizes it to `https://YOUR_WORKER.workers.dev/wake`.
 

@@ -2,11 +2,23 @@ name: Static Tests
 
 on:
   push:
+    paths-ignore:
+      - "assets/**"
   pull_request:
+    paths-ignore:
+      - "assets/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: static-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  bash-static-tests:
+  fast-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       LC_ALL: C.UTF-8
     steps:
@@ -20,12 +32,6 @@ jobs:
           bash -n ./tests/g2ray_static_tests.sh
           bash -n ./tests/g2ray_behavior_tests.sh
 
-      - name: ShellCheck critical issues
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y shellcheck
-          shellcheck -S error ./g2ray.sh ./scripts/post-start.sh ./tests/*.sh
-
       - name: Syntax check Worker
         run: node --check ./worker/codespace-waker/src/index.js
 
@@ -37,6 +43,25 @@ jobs:
 
       - name: Run Worker behavior tests
         run: node ./tests/worker_behavior_tests.mjs
+
+      - name: Run deterministic benchmark budgets
+        run: bash ./g2ray.sh bench --json --mock
+
+  extended-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: fast-tests
+    env:
+      LC_ALL: C.UTF-8
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: ShellCheck critical issues
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          shellcheck -S error ./g2ray.sh ./scripts/post-start.sh ./tests/*.sh
 
       - name: Wrangler dry-run bundle check
         run: npx --yes wrangler@4 deploy worker/codespace-waker/src/index.js --name g2ray-codespace-waker-ci --compatibility-date 2024-11-01 --dry-run --outdir /tmp/g2ray-worker-dry-run

@@ -65,7 +65,7 @@ If you use the Cloudflare dashboard instead of Wrangler, add `CODESPACE_NAME` as
 
 Optional: add `CODESPACE_PORT` as a **Plaintext** variable only if you changed the panel's `XRAY_PORT`. Leave it unset for the default port `443`.
 
-Optional history: create a Cloudflare KV namespace and bind it as `WAKER_KV`. Without this binding, the dashboard still works but shows history as disabled. With `WAKER_KV`, it stores recent wake/health events, route HTTP status, latency, route wait time, and last failures under a per-Codespace key so the dashboard can show repeated HTTP `404` settling and latency trends.
+Optional history: create a Cloudflare KV namespace and bind it as `WAKER_KV`. Without this binding, the dashboard still works but shows history as disabled. With `WAKER_KV`, it stores recent wake/health events, route HTTP status, latency, route wait time, and last failures under a per-Codespace key so the dashboard can show repeated HTTP `404` settling and latency trends. Identical health polls are sampled with `HEALTH_HISTORY_SAMPLE_MS` (default 5 minutes) so the history stays readable.
 
 Quota survival history also uses `WAKER_KV`. When GitHub returns HTTP `402`, the Worker records the first quota block, latest quota block, estimated monthly reset, retention/deletion fields from GitHub, and the next later successful wake or health check. This helps confirm that the same Codespace survived into the next monthly reset.
 
@@ -76,7 +76,7 @@ Optional alerts:
 - Add `DISCORD_WEBHOOK_URL` as a **Secret** variable to notify a Discord channel.
 - Add `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` as **Secret** variables to notify Telegram.
 
-Alerts are sent for wake attempts when a wake succeeds, when the route is ready, when the route remains stuck at HTTP `404`, and when GitHub rejects the token with `401` or `403`. Manual **Check Health** calls record history when KV is enabled, but they do not send route-ready or route-stuck alerts unless they reveal a token problem.
+Alerts are sent for wake attempts when a wake succeeds, when the route is ready, when the route remains stuck at HTTP `404`, and when GitHub rejects the token with `401` or `403`. Manual **Check Health** calls record history when KV is enabled; if history contains a previous stuck route, a later health check can send one route-ready transition alert when the route becomes usable. Repeated identical health checks are deduped or sampled instead of filling history with noise.
 
 ## 3. Add Secrets
 

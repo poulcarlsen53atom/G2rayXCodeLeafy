@@ -10,6 +10,7 @@ README="$ROOT_DIR/README.md"
 CONFIGS="$ROOT_DIR/configs.txt"
 DOCKERFILE="$ROOT_DIR/.devcontainer/Dockerfile"
 CI_WORKFLOW="$ROOT_DIR/.github/workflows/static-tests.yml"
+BEHAVIOR_TESTS="$ROOT_DIR/tests/g2ray_behavior_tests.sh"
 REOPEN_SCRIPT="$ROOT_DIR/scripts/reopen-codespace.ps1"
 POST_START_SCRIPT="$ROOT_DIR/scripts/post-start.sh"
 WORKER_DIR="$ROOT_DIR/worker/codespace-waker"
@@ -746,8 +747,20 @@ test_worker_dashboard_and_history_features() {
         || fail 'Worker does not defer notification side effects with waitUntil'
     grep_fixed 'queueHistorySideEffects(env, event, data, ctx)' "$WORKER_SCRIPT" \
         || fail 'Worker does not defer KV history/quota side effects with waitUntil'
+    grep_fixed 'enrichEventWithHistoryContext(env, eventFromResult("health", codespaceName, data))' "$WORKER_SCRIPT" \
+        || fail 'Worker health events are not enriched from KV history before notifications'
+    grep_fixed 'route_ready_transition' "$WORKER_SCRIPT" \
+        || fail 'Worker does not mark route-ready transitions after stuck routes'
+    grep_fixed 'shouldStoreHistoryEvent(env, event, existing)' "$WORKER_SCRIPT" \
+        || fail 'Worker does not dedupe or sample noisy health history'
+    grep_fixed 'HEALTH_HISTORY_SAMPLE_MS' "$WORKER_SCRIPT" \
+        || fail 'Worker health history sampling is not configurable'
     grep_fixed 'WAKER_KV' "$WORKER_README" \
         || fail 'Worker README does not document optional KV history'
+    grep_fixed 'route-ready transition alert' "$WORKER_README" \
+        || fail 'Worker README does not document health-driven route-ready transition alerts'
+    grep_fixed 'Identical health polls are sampled' "$WORKER_README" \
+        || fail 'Worker README does not document health-history sampling'
     grep_fixed 'DISCORD_WEBHOOK_URL' "$WORKER_README" \
         || fail 'Worker README does not document optional Discord alerts'
     grep_fixed 'TELEGRAM_BOT_TOKEN' "$WORKER_README" \
@@ -1399,7 +1412,72 @@ test_ci_runs_static_regressions() {
         || fail 'CI workflow does not run the Worker behavior suite'
     grep_fixed 'LC_ALL: C.UTF-8' "$CI_WORKFLOW" \
         || fail 'CI workflow does not pin a UTF-8 locale for README/static text checks'
-    pass 'CI runs shell syntax, ShellCheck, Worker syntax/bundle, panel behavior, and Worker behavior regressions'
+    grep_fixed 'permissions:' "$CI_WORKFLOW" \
+        || fail 'CI workflow does not set explicit permissions'
+    grep_fixed 'contents: read' "$CI_WORKFLOW" \
+        || fail 'CI workflow does not use least-privilege read-only contents permission'
+    if grep_regex '^[[:space:]]+[A-Za-z_-]+:[[:space:]]+write[[:space:]]*$' "$CI_WORKFLOW"; then
+        fail 'CI workflow grants a write permission scope'
+    fi
+    grep_fixed 'concurrency:' "$CI_WORKFLOW" \
+        || fail 'CI workflow does not cancel obsolete duplicate runs'
+    grep_fixed 'cancel-in-progress: true' "$CI_WORKFLOW" \
+        || fail 'CI workflow concurrency does not cancel in-progress duplicates'
+    grep_fixed 'fast-tests:' "$CI_WORKFLOW" \
+        || fail 'CI workflow does not split fast tests into a dedicated job'
+    grep_fixed 'extended-tests:' "$CI_WORKFLOW" \
+        || fail 'CI workflow does not split slower extended checks into a dedicated job'
+    grep_fixed 'timeout-minutes: 20' "$CI_WORKFLOW" \
+        || fail 'CI fast job has no bounded timeout'
+    grep_fixed 'timeout-minutes: 30' "$CI_WORKFLOW" \
+        || fail 'CI extended job has no bounded timeout'
+    grep_fixed 'needs: fast-tests' "$CI_WORKFLOW" \
+        || fail 'CI extended job does not wait for fast tests'
+    grep_fixed 'paths-ignore:' "$CI_WORKFLOW" \
+        || fail 'CI workflow does not use path filters for asset-only churn'
+    [[ "$(grep -Fc '      - "assets/**"' "$CI_WORKFLOW")" -eq 2 ]] \
+        || fail 'CI workflow path filters should ignore only assets on push and pull_request'
+    grep_fixed 'bash ./g2ray.sh bench --json --mock' "$CI_WORKFLOW" \
+        || fail 'CI workflow does not run deterministic benchmark budgets'
+    pass 'CI runs split, bounded shell/Worker regressions and benchmark budgets'
+}
+
+test_headless_benchmark_path_is_documented_and_guarded() {
+    grep_fixed 'XHTTP_PATH_CACHE_FILE=' "$SCRIPT" \
+        || fail 'script does not define the cached XHTTP config path file'
+    grep_fixed 'file_fingerprint "$CONFIG_FILE"' "$SCRIPT" \
+        || fail 'XHTTP config path cache is not keyed by config content'
+    grep_fixed 'bench_json()' "$SCRIPT" \
+        || fail 'script does not expose headless benchmark JSON'
+    grep_fixed 'bench_budget_value()' "$SCRIPT" \
+        || fail 'benchmark budgets do not sanitize environment overrides before JSON output'
+    grep_fixed 'bench_rebind_runtime_paths "$tmp"' "$SCRIPT" \
+        || fail 'mock benchmarks do not isolate runtime state in a temporary root'
+    grep_fixed 'G2RAY_BENCH_PREINIT_TMP=' "$SCRIPT" \
+        || fail 'mock benchmark dispatch does not redirect runtime paths before top-level initialization'
+    grep_fixed 'G2RAY_DATA_DIR="$G2RAY_BENCH_PREINIT_TMP/data"' "$SCRIPT" \
+        || fail 'mock benchmark dispatch can still touch the real data directory before isolation'
+    grep_fixed 'G2RAY_LOG_DIR="$G2RAY_BENCH_PREINIT_TMP/logs"' "$SCRIPT" \
+        || fail 'mock benchmark dispatch can still touch the real log directory before isolation'
+    grep_fixed 'config_path_cache)' "$SCRIPT" \
+        || fail 'benchmark budget set does not cover config path caching'
+    grep_fixed 'recover_json_contract)' "$SCRIPT" \
+        || fail 'benchmark budget set does not cover recover --json contract speed'
+    grep_fixed 'LAST_GOOD_ROUTE_MAX_AGE_SEC="${G2RAY_LAST_GOOD_ROUTE_MAX_AGE_SEC:-1800}"' "$SCRIPT" \
+        || fail 'script does not bound stale last-good route preference'
+    grep_fixed 'last_good_route_fresh_value()' "$SCRIPT" \
+        || fail 'script does not decay stale last-good route preference before export ordering'
+    grep_fixed 'checked_epoch=$(date -u -d "$checked" +%s' "$SCRIPT" \
+        || fail 'last-good route freshness does not use saved checked_at timestamps'
+    grep_fixed 'unset G2RAY_LOW_OVERHEAD G2RAY_LATENCY_FOCUS G2RAY_BENCH_MOCK G2RAY_BENCH_ISOLATED' "$BEHAVIOR_TESTS" \
+        || fail 'behavior test harness can leak benchmark isolation state between tests'
+    grep_fixed 'G2RAY_LAST_GOOD_ROUTE_MAX_AGE_SEC' "$README" \
+        || fail 'README does not document the last-good route decay knob'
+    grep_fixed 'bash ./g2ray.sh bench --json --mock' "$README" \
+        || fail 'README does not document the benchmark budget command'
+    grep_fixed 'isolated mocked performance budget checks' "$README" \
+        || fail 'README does not explain that mock benchmarks avoid live state and network probes'
+    pass 'headless benchmark budgets are exposed, isolated, and documented'
 }
 
 test_xhttp_route_settling_is_observable() {
@@ -1612,6 +1690,7 @@ test_runtime_files_are_private_and_tempfiles_are_unique
 test_logs_are_bounded_and_quota_is_cycle_aware
 test_fallback_link_count_is_capped
 test_ci_runs_static_regressions
+test_headless_benchmark_path_is_documented_and_guarded
 test_docs_and_public_configs_are_consistent
 test_devcontainer_tooling_is_not_duplicated
 test_devcontainer_post_start_wrapper_is_present

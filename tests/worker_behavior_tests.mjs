@@ -1134,10 +1134,11 @@ async function testHealthQueuesMissingScopeNotificationAndDoesNotCountRouteCheck
     throw new Error(`unexpected fetch ${url}`);
   };
 
+  const env = baseEnv({ WAKER_KV: kv, DISCORD_WEBHOOK_URL: "https://discord.example/hook" });
   const waitUntilPromises = [];
   const response = await worker.fetch(
     makeRequest("/api/health"),
-    baseEnv({ WAKER_KV: kv, DISCORD_WEBHOOK_URL: "https://discord.example/hook" }),
+    env,
     { waitUntil(promise) { waitUntilPromises.push(promise); } }
   );
   const body = await responseJson(response);
@@ -1254,6 +1255,116 @@ async function testHistorySideEffectsCanDeferWithWaitUntil() {
   console.log("PASS: Worker defers KV history side effects through waitUntil");
 }
 
+async function testWorkerDeduplicatesNoisyHealthHistory() {
+  const kv = makeKv();
+  let routeCalls = 0;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("api.github.com")) {
+      return new Response(JSON.stringify({
+        name: "behavior-space",
+        state: "Available",
+        pending_operation: false,
+        last_used_at: "2026-05-30T00:00:00Z",
+        idle_timeout_minutes: 240
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    if (url.includes("app.github.dev")) {
+      routeCalls += 1;
+      return new Response("", { status: 200 });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  const env = baseEnv({ WAKER_KV: kv });
+  for (let i = 0; i < 2; i += 1) {
+    const waitUntilPromises = [];
+    const response = await worker.fetch(
+      makeRequest("/api/health"),
+      env,
+      { waitUntil(promise) { waitUntilPromises.push(promise); } }
+    );
+    assert.equal(response.status, 200);
+    await Promise.all(waitUntilPromises);
+  }
+  const history = await responseJson(await worker.fetch(makeRequest("/api/history"), env, {}));
+  assert.equal(history.history.length, 1);
+  assert.equal(routeCalls >= 4, true);
+  console.log("PASS: Worker deduplicates noisy identical health history");
+}
+
+async function testHealthRouteReadyTransitionNotification() {
+  const kv = makeKv();
+  await kv.put("history:behavior-space", JSON.stringify([{
+    ts: "2026-06-01T00:00:00.000Z",
+    kind: "wake",
+    ok: true,
+    codespace: "behavior-space",
+    state: "Available",
+    route_ready: false,
+    route_http_status: 404,
+    next_action_code: "wait_route_or_recover"
+  }]));
+  let notificationCalls = 0;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("api.github.com")) {
+      return new Response(JSON.stringify({
+        name: "behavior-space",
+        state: "Available",
+        pending_operation: false,
+        last_used_at: "2026-05-30T00:00:00Z",
+        idle_timeout_minutes: 240
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    if (url.includes("app.github.dev")) {
+      return new Response("", { status: 200 });
+    }
+    if (url.includes("discord.example")) {
+      notificationCalls += 1;
+      return new Response("", { status: 200 });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  const env = baseEnv({ WAKER_KV: kv, DISCORD_WEBHOOK_URL: "https://discord.example/hook" });
+  const waitUntilPromises = [];
+  const response = await worker.fetch(
+    makeRequest("/api/health"),
+    env,
+    { waitUntil(promise) { waitUntilPromises.push(promise); } }
+  );
+  const body = await responseJson(response);
+  assert.equal(response.status, 200);
+  assert.equal(body.route_ready, true);
+  assert.equal(body.notification_status, "deferred");
+  assert.equal(waitUntilPromises.length, 2);
+  await Promise.all(waitUntilPromises);
+  const secondWaitUntilPromises = [];
+  const secondResponse = await worker.fetch(
+    makeRequest("/api/health"),
+    env,
+    { waitUntil(promise) { secondWaitUntilPromises.push(promise); } }
+  );
+  const secondBody = await responseJson(secondResponse);
+  assert.equal(secondResponse.status, 200);
+  assert.equal(secondBody.route_ready, true);
+  assert.equal(secondBody.notification_status, "none");
+  await Promise.all(secondWaitUntilPromises);
+  const history = await responseJson(await worker.fetch(makeRequest("/api/history"), baseEnv({ WAKER_KV: kv }), {}));
+  const transitions = history.history.filter((item) => item.route_ready_transition);
+  assert.equal(transitions.length, 1);
+  assert.equal(transitions[0].previous_route_http_status, 404);
+  assert.equal(notificationCalls, 1);
+  console.log("PASS: Worker notifies once when health observes route-ready transition");
+}
+
 try {
   await testFailedSecretRateLimit();
   await testGithubRateLimitClassification();
@@ -1287,6 +1398,8 @@ try {
   await testHealthQueuesMissingScopeNotificationAndDoesNotCountRouteCheck();
   await testDeferredNotificationFailureIsMarkedDeferred();
   await testHistorySideEffectsCanDeferWithWaitUntil();
+  await testWorkerDeduplicatesNoisyHealthHistory();
+  await testHealthRouteReadyTransitionNotification();
 } finally {
   globalThis.fetch = originalFetch;
 }

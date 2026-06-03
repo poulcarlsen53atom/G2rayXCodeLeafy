@@ -30,6 +30,7 @@ reset_runtime_paths() {
     ROUTE_STATS_FILE="$DATA_DIR/route_candidate_stats.tsv"
     ROUTE_COOLDOWN_FILE="$DATA_DIR/route_candidate_cooldowns.tsv"
     BOOT_STATUS_FILE="$DATA_DIR/boot_status.json"
+    XHTTP_PATH_CACHE_FILE="$DATA_DIR/xhttp_path_cache"
     LOW_OVERHEAD_FILE="$DATA_DIR/low_overhead_mode"
     LOW_OVERHEAD_DISABLED_FILE="$DATA_DIR/low_overhead_mode_disabled"
     LATENCY_FOCUS_FILE="$DATA_DIR/latency_focus_mode"
@@ -53,6 +54,14 @@ reset_runtime_paths() {
     : > "$LOG_FILE"
     : > "$STRUCTURED_LOG_FILE"
     : > "$DIAGNOSTIC_LOG_FILE"
+    LOG_MAX_BYTES=1048576
+    LOG_ROTATE_KEEP=3
+    MAX_FALLBACK_LINKS=20
+    ROUTE_MONITOR_MAX_CANDIDATES=24
+    ROUTE_HEALTH_TTL_SEC=300
+    ROUTE_FAILURE_COOLDOWN_SEC=180
+    LAST_GOOD_ROUTE_MAX_AGE_SEC=1800
+    unset G2RAY_LOW_OVERHEAD G2RAY_LATENCY_FOCUS G2RAY_BENCH_MOCK G2RAY_BENCH_ISOLATED
 }
 
 export CODESPACE_NAME="behavior-space"
@@ -201,6 +210,32 @@ EOF
     [[ "${routes[0]:-}" == "20.0.0.2" ]] || fail "recent weighted route score did not outrank stale cumulative average"
     [[ "${routes[1]:-}" == "20.0.0.1" ]] || fail "route with stale cumulative average was not kept second"
     pass "cached route health orders exports by recent weighted score"
+}
+
+test_last_good_route_decays_before_breaking_ties() {
+    reset_runtime_paths
+    LAST_GOOD_ROUTE_MAX_AGE_SEC=60
+    local now
+    now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    cat > "$ROUTE_HEALTH_FILE" <<'EOF'
+2026-05-30T00:00:00Z	20.0.0.1	200	50	true	dns	ready
+2026-05-30T00:00:00Z	20.0.0.2	200	50	true	dns	ready
+EOF
+    cat > "$LAST_GOOD_ROUTE_FILE" <<EOF
+ip=20.0.0.2
+http_status=200
+latency_ms=50
+source=test
+checked_at=$now
+EOF
+    local routes
+    mapfile -t routes < <(cached_usable_fallback_ips)
+    [[ "${routes[0]:-}" == "20.0.0.2" ]] || fail "fresh last-good route did not break an equal route tie"
+
+    sed -i 's/^checked_at=.*/checked_at=2000-01-01T00:00:00Z/' "$LAST_GOOD_ROUTE_FILE"
+    mapfile -t routes < <(cached_usable_fallback_ips)
+    [[ "${routes[0]:-}" == "20.0.0.1" ]] || fail "stale last-good route still influenced equal route ordering"
+    pass "last-good route preference decays before breaking route ties"
 }
 
 test_route_candidate_stats_track_average_and_success_rate() {
@@ -526,6 +561,36 @@ test_usable_fallback_ips_caps_live_probe_fallback() {
     pass "usable fallback live probes are bounded by route monitor cap"
 }
 
+test_xhttp_config_path_is_cached_by_config_content() {
+    reset_runtime_paths
+    cat > "$CONFIG_FILE" <<'JSON'
+{"inbounds":[{"tag":"vless-in","streamSettings":{"xhttpSettings":{"path":"/cached"}}}]}
+JSON
+    local jq_calls="$TMP_ROOT/jq-calls.txt"
+    : > "$jq_calls"
+    jq() {
+        printf 'call\n' >> "$jq_calls"
+        sed -nE 's/.*"path":"([^"]+)".*/\1/p' "$CONFIG_FILE"
+    }
+    local first second third calls old_mtime
+    first="$(xhttp_config_path)"
+    second="$(xhttp_config_path)"
+    old_mtime=$(stat -c %Y "$CONFIG_FILE" 2>/dev/null || printf '')
+    cat > "$CONFIG_FILE" <<'JSON'
+{"inbounds":[{"tag":"vless-in","streamSettings":{"xhttpSettings":{"path":"/fresh"}}}]}
+JSON
+    if [[ -n "$old_mtime" ]]; then
+        touch -d "@$old_mtime" "$CONFIG_FILE" 2>/dev/null || true
+    fi
+    third="$(xhttp_config_path)"
+    unset -f jq
+    calls=$(wc -l < "$jq_calls" | tr -d ' ')
+    [[ "$first" == "/cached" && "$second" == "/cached" && "$third" == "/fresh" ]] \
+        || fail "xhttp_config_path did not cache by content safely: first=$first second=$second third=$third"
+    [[ "$calls" -eq 2 ]] || fail "xhttp_config_path parsed config $calls times instead of once per content version"
+    pass "xHTTP config path is cached by config file content"
+}
+
 test_boot_status_helpers_record_silent_start_result() {
     reset_runtime_paths
     write_boot_status "route_settling" "silent_start" "Route still settling" "404" "33"
@@ -555,6 +620,29 @@ test_config_exports_write_metadata_and_subscription_url() {
     pass "config exports write machine-readable metadata and subscription URL"
 }
 
+test_config_exports_are_stable_client_artifacts() {
+    reset_runtime_paths
+    BASE_DIR="$TMP_ROOT"
+    MOBILE_CONFIG_FILE="$BASE_DIR/configs-to-copy-for-mobile.txt"
+    SUBSCRIPTION_FILE="$BASE_DIR/configs-subscription-base64.txt"
+    CONFIG_META_FILE="$BASE_DIR/configs-meta.json"
+    git_remote_repo_slug() { printf 'owner/repo\n'; }
+    local link1='vless://uuid@example.com:443?encryption=none#one'
+    local link2='vless://uuid@20.0.0.1:443?encryption=none#two'
+
+    write_config_exports_from_links "$link1" "$link2" >/dev/null
+    mapfile -t mobile_lines < "$MOBILE_CONFIG_FILE"
+    [[ "${mobile_lines[0]:-}" == "$link1" && "${mobile_lines[1]:-}" == "$link2" ]] \
+        || fail "mobile export did not preserve generated link ordering"
+    python - "$SUBSCRIPTION_FILE" "$link1" "$link2" <<'PY' || fail "subscription export does not decode to expected VLESS links"
+import base64, pathlib, sys
+decoded = base64.b64decode(pathlib.Path(sys.argv[1]).read_text()).decode().splitlines()
+if decoded != [sys.argv[2], sys.argv[3]]:
+    raise SystemExit(decoded)
+PY
+    pass "config exports produce stable mobile and base64 subscription artifacts"
+}
+
 test_config_metadata_sanitizes_invalid_max_fallback_links() {
     reset_runtime_paths
     BASE_DIR="$TMP_ROOT"
@@ -571,6 +659,55 @@ test_config_metadata_sanitizes_invalid_max_fallback_links() {
     grep -Fq '"max_fallback_links": 20' "$CONFIG_META_FILE" \
         || fail "invalid max fallback link setting was not sanitized to default 20"
     pass "config metadata sanitizes invalid max fallback link settings"
+}
+
+test_bench_json_reports_deterministic_budgets() {
+    reset_runtime_paths
+    local output bench_file bench_root command_output
+    output="$(G2RAY_BENCH_MOCK=1 bench_json --mock)"
+    bench_file="$TMP_ROOT/bench.json"
+    printf '%s\n' "$output" > "$bench_file"
+    python - "$bench_file" <<'PY' || fail "bench_json did not return valid budget JSON"
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = json.load(handle)
+assert data["ok"] is True
+assert data["mocked"] is True
+assert data["budgets_ok"] is True
+names = {case["name"] for case in data["cases"]}
+required = {"config_path_cache", "route_ordering", "export_generation", "doctor_json", "recover_json_contract"}
+missing = required - names
+if missing:
+    raise AssertionError(f"missing benchmark cases: {sorted(missing)}")
+for case in data["cases"]:
+    assert isinstance(case["elapsed_ms"], int)
+    assert case["elapsed_ms"] <= case["budget_ms"], case
+PY
+    bench_root="$TMP_ROOT/bench-command-root"
+    command_output="$TMP_ROOT/bench-command.json"
+    mkdir -p "$bench_root"
+    cp "$SCRIPT" "$bench_root/g2ray.sh"
+    (cd "$bench_root" && env -u G2RAY_SOURCE_ONLY bash ./g2ray.sh bench --json --mock > "$command_output")
+    [[ ! -e "$bench_root/data" && ! -e "$bench_root/logs" ]] \
+        || fail "bench --json --mock created runtime dirs in the command working tree"
+    python - "$command_output" <<'PY' || fail "bench --json --mock command did not return valid passing JSON"
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = json.load(handle)
+assert data["ok"] is True
+assert data["budgets_ok"] is True
+PY
+    output="$(G2RAY_BENCH_BUDGET_CONFIG_PATH_MS=not-a-number G2RAY_BENCH_MOCK=1 bench_json --mock)"
+    printf '%s\n' "$output" > "$bench_file"
+    python - "$bench_file" <<'PY' || fail "bench_json did not sanitize invalid budget environment values"
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = json.load(handle)
+case = next(item for item in data["cases"] if item["name"] == "config_path_cache")
+assert case["budget_ms"] == 600, case
+assert data["ok"] is True
+PY
+    pass "bench --json reports deterministic performance budgets"
 }
 
 test_low_overhead_mode_suppresses_info_logs() {
@@ -884,6 +1021,19 @@ test_diagnostic_snapshot_writes_readable_history() {
     pass "diagnostic snapshots persist readable history"
 }
 
+test_diagnostic_log_rotation_keeps_readable_history() {
+    reset_runtime_paths
+    LOG_MAX_BYTES=64
+    LOG_ROTATE_KEEP=2
+    printf 'old diagnostic line that is intentionally longer than the tiny rotation threshold\n' > "$DIAGNOSTIC_LOG_FILE"
+    rotate_log_file "$DIAGNOSTIC_LOG_FILE"
+    printf 'new diagnostic line\n' > "$DIAGNOSTIC_LOG_FILE"
+    [[ -s "$DIAGNOSTIC_LOG_FILE.1" ]] || fail "diagnostic rotation did not keep rotated history"
+    grep -Fq 'old diagnostic line' "$DIAGNOSTIC_LOG_FILE.1" \
+        || fail "diagnostic rotation did not preserve readable prior content"
+    pass "diagnostic log rotation keeps readable bounded history"
+}
+
 test_structured_log_jsonl_is_parseable_with_special_chars() {
     reset_runtime_paths
     log_event INFO $'route_unusable detail="bad route" path=C:\\tmp\\x\nnext-line'
@@ -1089,6 +1239,7 @@ test_runtime_lock_serializes_operations_and_allows_reentry
 test_port_visibility_cache_is_scoped_by_codespace_and_port
 test_cached_route_order_uses_reliability_then_average_latency
 test_cached_route_order_uses_recent_weighted_score
+test_last_good_route_decays_before_breaking_ties
 test_route_candidate_stats_track_average_and_success_rate
 test_route_health_records_source_reason_and_recent_average
 test_route_failure_reason_classifier
@@ -1106,9 +1257,12 @@ test_last_known_state_scans_full_current_log
 test_usable_fallback_ips_uses_fresh_cache
 test_usable_fallback_ips_fills_partial_fresh_cache
 test_usable_fallback_ips_caps_live_probe_fallback
+test_xhttp_config_path_is_cached_by_config_content
 test_boot_status_helpers_record_silent_start_result
 test_config_exports_write_metadata_and_subscription_url
+test_config_exports_are_stable_client_artifacts
 test_config_metadata_sanitizes_invalid_max_fallback_links
+test_bench_json_reports_deterministic_budgets
 test_low_overhead_mode_suppresses_info_logs
 test_low_overhead_env_can_be_overridden_by_toggle
 test_low_overhead_keeps_important_state_logs
@@ -1127,6 +1281,7 @@ test_recover_now_json_reports_ready_contract
 test_recover_now_json_reports_settling_contract
 test_recover_now_json_treats_followup_ready_probe_as_success
 test_diagnostic_snapshot_writes_readable_history
+test_diagnostic_log_rotation_keeps_readable_history
 test_structured_log_jsonl_is_parseable_with_special_chars
 test_support_bundle_redacts_sensitive_material
 test_support_bundle_handles_relative_log_dir

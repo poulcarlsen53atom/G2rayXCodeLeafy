@@ -26,6 +26,21 @@ detect_project_repo_default() {
 PROJECT_REPO="${G2RAY_PROJECT_REPO:-$(detect_project_repo_default)}"
 RAW_BASE_URL="${G2RAY_RAW_BASE_URL:-https://raw.githubusercontent.com/${PROJECT_REPO}/main}"
 
+G2RAY_BENCH_PREINIT_TMP="${G2RAY_BENCH_PREINIT_TMP:-}"
+case "${1:-}" in
+    --bench|bench)
+        if [[ "${2:-}" == "--mock" || "${3:-}" == "--mock" || "${G2RAY_BENCH_MOCK:-0}" == "1" ]]; then
+            umask 077
+            if ! G2RAY_BENCH_PREINIT_TMP=$(mktemp -d "${TMPDIR:-/tmp}/g2ray-bench.XXXXXX"); then
+                echo "Could not create temporary benchmark runtime directory." >&2
+                exit 1
+            fi
+            G2RAY_DATA_DIR="$G2RAY_BENCH_PREINIT_TMP/data"
+            G2RAY_LOG_DIR="$G2RAY_BENCH_PREINIT_TMP/logs"
+        fi
+        ;;
+esac
+
 GREEN='\033[1;32m'; WHITE='\033[1;37m'; RED='\033[1;31m'
 YELLOW='\033[1;33m'; DIM='\033[2m'; NC='\033[0m'; B='\033[1m'
 
@@ -49,6 +64,7 @@ ROUTE_HEALTH_FILE="$DATA_DIR/route_candidate_health.tsv"
 ROUTE_STATS_FILE="$DATA_DIR/route_candidate_stats.tsv"
 ROUTE_COOLDOWN_FILE="$DATA_DIR/route_candidate_cooldowns.tsv"
 BOOT_STATUS_FILE="$DATA_DIR/boot_status.json"
+XHTTP_PATH_CACHE_FILE="$DATA_DIR/xhttp_path_cache"
 LOW_OVERHEAD_FILE="$DATA_DIR/low_overhead_mode"
 LOW_OVERHEAD_DISABLED_FILE="$DATA_DIR/low_overhead_mode_disabled"
 LATENCY_FOCUS_FILE="$DATA_DIR/latency_focus_mode"
@@ -92,6 +108,7 @@ ROUTE_FAILURE_COOLDOWN_SEC="${G2RAY_ROUTE_FAILURE_COOLDOWN_SEC:-180}"
 ROUTE_PROBE_CONCURRENCY="${G2RAY_ROUTE_PROBE_CONCURRENCY:-4}"
 ROUTE_PROBE_JITTER_SEC="${G2RAY_ROUTE_PROBE_JITTER_SEC:-0}"
 PORT_PUBLIC_TTL_SEC="${G2RAY_PORT_PUBLIC_TTL_SEC:-300}"
+LAST_GOOD_ROUTE_MAX_AGE_SEC="${G2RAY_LAST_GOOD_ROUTE_MAX_AGE_SEC:-1800}"
 WAKER_TEST_TIMEOUT_SEC="${G2RAY_WAKER_TEST_TIMEOUT_SEC:-180}"
 RUNTIME_LOCK_WAIT_ATTEMPTS="${G2RAY_RUNTIME_LOCK_WAIT_ATTEMPTS:-900}"
 PERFORMANCE_PROFILE="${G2RAY_PERFORMANCE_PROFILE:-balanced}"
@@ -325,6 +342,18 @@ fingerprint_secret() {
     fi
 }
 
+file_fingerprint() {
+    local file="$1"
+    [[ -f "$file" ]] || return 1
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file" 2>/dev/null | awk '{print $1}'
+    elif command -v md5sum >/dev/null 2>&1; then
+        md5sum "$file" 2>/dev/null | awk '{print $1}'
+    else
+        cksum "$file" 2>/dev/null | awk '{print $1 ":" $2}'
+    fi
+}
+
 _detect_codespace_name() {
     valid_codespace_name "${CODESPACE_NAME:-}" && { printf '%s' "$CODESPACE_NAME"; return; }
     if command -v gh >/dev/null 2>&1; then
@@ -393,9 +422,27 @@ curl_remote_ip() {
 }
 
 xhttp_config_path() {
+    local cache_key cached_key cached_path path
+    if [[ -f "$CONFIG_FILE" ]]; then
+        cache_key=$(file_fingerprint "$CONFIG_FILE" 2>/dev/null || true)
+        [[ -n "$cache_key" ]] || cache_key=$(stat -c '%Y:%s:%y' "$CONFIG_FILE" 2>/dev/null || printf '0')
+        if [[ -s "$XHTTP_PATH_CACHE_FILE" ]]; then
+            IFS=$'\t' read -r cached_key cached_path < "$XHTTP_PATH_CACHE_FILE" 2>/dev/null || true
+            if [[ "$cached_key" == "$cache_key" && -n "${cached_path:-}" ]]; then
+                printf '%s\n' "$cached_path"
+                return 0
+            fi
+        fi
+    fi
     if [[ -f "$CONFIG_FILE" ]] && command -v jq >/dev/null 2>&1; then
-        jq -r '.inbounds[]? | select(.tag=="vless-in") | .streamSettings.xhttpSettings.path // "/"' "$CONFIG_FILE" 2>/dev/null \
-            | awk 'NF {print; exit}'
+        path=$(jq -r '.inbounds[]? | select(.tag=="vless-in") | .streamSettings.xhttpSettings.path // "/"' "$CONFIG_FILE" 2>/dev/null \
+            | awk 'NF {print; exit}')
+        [[ -n "$path" ]] || path="/"
+        if [[ -n "${cache_key:-}" ]]; then
+            printf '%s\t%s\n' "$cache_key" "$path" > "$XHTTP_PATH_CACHE_FILE" 2>/dev/null || true
+            chmod 600 "$XHTTP_PATH_CACHE_FILE" 2>/dev/null || true
+        fi
+        printf '%s\n' "$path"
         return 0
     fi
     printf '/'
@@ -2419,6 +2466,28 @@ last_good_route_value() {
     awk -F= '$1 == "ip" {print $2; exit}' "$LAST_GOOD_ROUTE_FILE" 2>/dev/null || true
 }
 
+last_good_route_fresh_value() {
+    local age checked checked_epoch max now ip
+    [[ -f "$LAST_GOOD_ROUTE_FILE" ]] || return 0
+    max="$LAST_GOOD_ROUTE_MAX_AGE_SEC"
+    [[ "$max" =~ ^[0-9]+$ ]] || max=1800
+    (( max > 0 )) || return 0
+    checked=$(awk -F= '$1 == "checked_at" {print $2; exit}' "$LAST_GOOD_ROUTE_FILE" 2>/dev/null || true)
+    if [[ -n "$checked" ]] && checked_epoch=$(date -u -d "$checked" +%s 2>/dev/null); then
+        now=$(date -u +%s 2>/dev/null || printf '0')
+        [[ "$now" =~ ^[0-9]+$ ]] || now=0
+        age=$(( now - checked_epoch ))
+        (( age >= 0 )) || return 0
+    else
+        age=$(file_age_sec "$LAST_GOOD_ROUTE_FILE")
+    fi
+    (( age <= max )) || return 0
+    ip=$(last_good_route_value)
+    valid_ipv4 "$ip" || return 0
+    candidate_blacklisted "$ip" && return 0
+    printf '%s\n' "$ip"
+}
+
 last_good_route_summary() {
     if [[ ! -s "$LAST_GOOD_ROUTE_FILE" ]]; then
         printf 'Last good route : none recorded\n'
@@ -2527,7 +2596,7 @@ cached_usable_fallback_ips() {
     [[ -s "$ROUTE_HEALTH_FILE" ]] || return 1
     local last_good pinned stats_input
     pinned=$(pinned_route_value)
-    last_good=$(last_good_route_value)
+    last_good=$(last_good_route_fresh_value)
     stats_input="$ROUTE_STATS_FILE"
     [[ -s "$stats_input" ]] || stats_input="/dev/null"
     awk -F '\t' -v pinned="$pinned" -v last_good="$last_good" -v stats_file="$stats_input" '
@@ -3635,6 +3704,175 @@ print_doctor_json() {
 JSON
 }
 
+bench_now_ns() {
+    date +%s%N 2>/dev/null || awk 'BEGIN{srand(); printf "%.0f\n", systime() * 1000000000}'
+}
+
+bench_elapsed_ms() {
+    local start="$1" end="$2"
+    [[ "$start" =~ ^[0-9]+$ && "$end" =~ ^[0-9]+$ && "$end" -ge "$start" ]] || { printf '0'; return 0; }
+    printf '%s' "$(( (end - start) / 1000000 ))"
+}
+
+bench_budget_value() {
+    local value="$1" fallback="$2"
+    [[ "$value" =~ ^[0-9]+$ ]] && printf '%s' "$value" || printf '%s' "$fallback"
+}
+
+bench_budget_ms() {
+    local name="$1"
+    case "$name" in
+        config_path_cache) bench_budget_value "${G2RAY_BENCH_BUDGET_CONFIG_PATH_MS:-600}" 600 ;;
+        route_ordering) bench_budget_value "${G2RAY_BENCH_BUDGET_ROUTE_ORDERING_MS:-500}" 500 ;;
+        export_generation) bench_budget_value "${G2RAY_BENCH_BUDGET_EXPORT_MS:-3500}" 3500 ;;
+        doctor_json) bench_budget_value "${G2RAY_BENCH_BUDGET_DOCTOR_MS:-1800}" 1800 ;;
+        recover_json_contract) bench_budget_value "${G2RAY_BENCH_BUDGET_RECOVER_JSON_MS:-1800}" 1800 ;;
+        *) bench_budget_value "${G2RAY_BENCH_BUDGET_DEFAULT_MS:-1000}" 1000 ;;
+    esac
+}
+
+bench_case_json() {
+    local name="$1" command="$2" start end elapsed budget ok rc=0
+    budget=$(bench_budget_ms "$name")
+    start=$(bench_now_ns)
+    eval "$command" >/dev/null 2>&1 || rc=$?
+    end=$(bench_now_ns)
+    elapsed=$(bench_elapsed_ms "$start" "$end")
+    ok=false
+    [[ "$budget" =~ ^[0-9]+$ && "$elapsed" =~ ^[0-9]+$ && "$elapsed" -le "$budget" && "$rc" -eq 0 ]] && ok=true
+    printf '{"name":"%s","elapsed_ms":%s,"budget_ms":%s,"ok":%s,"exit_code":%s}' \
+        "$(json_escape "$name")" "$elapsed" "$budget" "$ok" "$rc"
+}
+
+bench_prepare_mock_state() {
+    mkdir -p "$DATA_DIR" "$LOG_DIR" "$BASE_DIR/data/qr" 2>/dev/null || true
+    [[ -s "$UUID_FILE" ]] || printf '00000000-0000-4000-8000-000000000001\n' > "$UUID_FILE"
+    cat > "$CONFIG_FILE" <<'JSON'
+{"inbounds":[{"tag":"vless-in","port":443,"protocol":"vless","settings":{"clients":[{"id":"00000000-0000-4000-8000-000000000001"}]},"streamSettings":{"network":"xhttp","security":"none","xhttpSettings":{"path":"/","mode":"packet-up"}}}]}
+JSON
+    cat > "$ROUTE_HEALTH_FILE" <<'EOF'
+2026-06-01T00:00:00Z	20.0.0.1	200	40	true	dns	ready
+2026-06-01T00:00:00Z	20.0.0.2	200	70	true	dns	ready
+2026-06-01T00:00:00Z	20.0.0.3	404	20	false	dns	route_settling_404
+EOF
+    cat > "$ROUTE_STATS_FILE" <<'EOF'
+20.0.0.1	8	8	0	40	35	60	40	200	true	2026-06-01T00:00:00Z	40	0	ready
+20.0.0.2	8	7	1	70	60	120	70	200	true	2026-06-01T00:00:00Z	75	0	ready
+EOF
+}
+
+bench_rebind_runtime_paths() {
+    BASE_DIR="$1"
+    DATA_DIR="$BASE_DIR/data"
+    CONFIG_FILE="$DATA_DIR/config.json"
+    UUID_FILE="$DATA_DIR/uuid.txt"
+    BG_TASKS_PID="$DATA_DIR/bg_tasks.pid"
+    BG_TASKS_VERSION_FILE="$DATA_DIR/bg_tasks.version"
+    BG_TASKS_LOCK_DIR="$DATA_DIR/bg_tasks.lock"
+    RUNTIME_LOCK_DIR="$DATA_DIR/runtime.lock"
+    BG_TASKS_TOKEN_FILE="$DATA_DIR/bg_tasks.token"
+    BG_TASKS_HEARTBEAT_FILE="$DATA_DIR/bg_tasks.heartbeat"
+    RESUME_GAP_FILE="$DATA_DIR/resume_gap.txt"
+    WAKER_METADATA_FILE="$DATA_DIR/waker_metadata.txt"
+    WAKER_PROMPT_FILE="$DATA_DIR/.waker_setup_prompted"
+    REMOTE_MESSAGE_FILE="$DATA_DIR/message.txt"
+    ROUTE_BAD_COUNT_FILE="$DATA_DIR/xhttp_route_bad_count"
+    EDGE_BAD_COUNT_FILE="$DATA_DIR/edge_bad_count"
+    EDGE_RECONNECT_STAMP_FILE="$DATA_DIR/edge_reconnect_last"
+    ROUTE_HEALTH_FILE="$DATA_DIR/route_candidate_health.tsv"
+    ROUTE_STATS_FILE="$DATA_DIR/route_candidate_stats.tsv"
+    ROUTE_COOLDOWN_FILE="$DATA_DIR/route_candidate_cooldowns.tsv"
+    BOOT_STATUS_FILE="$DATA_DIR/boot_status.json"
+    XHTTP_PATH_CACHE_FILE="$DATA_DIR/xhttp_path_cache"
+    LOW_OVERHEAD_FILE="$DATA_DIR/low_overhead_mode"
+    LOW_OVERHEAD_DISABLED_FILE="$DATA_DIR/low_overhead_mode_disabled"
+    LATENCY_FOCUS_FILE="$DATA_DIR/latency_focus_mode"
+    LATENCY_FOCUS_DISABLED_FILE="$DATA_DIR/latency_focus_mode_disabled"
+    LAST_GOOD_ROUTE_FILE="$DATA_DIR/last_good_route.txt"
+    PINNED_ROUTE_FILE="$DATA_DIR/pinned_route.txt"
+    MANUAL_ROUTE_CANDIDATES_FILE="$DATA_DIR/manual_route_candidates.txt"
+    BLACKLISTED_ROUTE_CANDIDATES_FILE="$DATA_DIR/blacklisted_route_candidates.txt"
+    ROUTE_SETTLING_HISTORY_FILE="$DATA_DIR/route_settling_history.tsv"
+    PORT_PUBLIC_STAMP_FILE="$DATA_DIR/port_public_last"
+    QUOTA_CYCLE_FILE="$DATA_DIR/quota_cycle.txt"
+    XRAY_PID_FILE="$DATA_DIR/xray.pid"
+    SAVED_BYTES_FILE="$DATA_DIR/saved_bytes.json"
+    SESSION_BYTES_FILE="$DATA_DIR/session_bytes.json"
+    TOTAL_UPTIME_FILE="$DATA_DIR/total_uptime_sec.txt"
+    SESSION_START_FILE="$DATA_DIR/session_start.txt"
+    LOG_DIR="$BASE_DIR/logs"
+    LOG_FILE="$LOG_DIR/g2ray.log"
+    STRUCTURED_LOG_FILE="$LOG_DIR/g2ray-events.jsonl"
+    DIAGNOSTIC_LOG_FILE="$LOG_DIR/g2ray-diagnostics.log"
+    QR_DIR="$DATA_DIR/qr"
+    MOBILE_CONFIG_FILE="$BASE_DIR/configs-to-copy-for-mobile.txt"
+    SUBSCRIPTION_FILE="$BASE_DIR/configs-subscription-base64.txt"
+    CONFIG_META_FILE="$BASE_DIR/configs-meta.json"
+}
+
+bench_json_impl() {
+    local mock="${1:-false}" first=true case_json cases="" overall=true
+    if [[ "$mock" == "true" ]]; then
+        bench_prepare_mock_state
+        MAX_FALLBACK_LINKS=2
+        ROUTE_MONITOR_MAX_CANDIDATES=3
+        ROUTE_HEALTH_TTL_SEC=3600
+        CODESPACE_NAME="bench-space"
+        PORT_DOMAIN="bench-space-443.app.github.dev"
+        log_event() { return 0; }
+        xhttp_probe_metrics() { printf '200 1 ready\n'; }
+        ensure_codespace_port_public() { return 0; }
+        xray_running() { return 0; }
+        is_port_open() { return 0; }
+        xray_listener_ready() { return 0; }
+        wait_for_xhttp_route_ready() { printf '200 1\n'; return 0; }
+        refresh_route_candidate_health() { return 0; }
+        background_supervisor_status() { printf 'pid=1 running=true version=ok token=present heartbeat_age=1s\n'; }
+        recover_now() { return 0; }
+        git_remote_repo_slug() { printf 'owner/repo\n'; }
+    fi
+    for spec in \
+        'config_path_cache|for _i in $(seq 1 5); do xhttp_config_path >/dev/null; done' \
+        'route_ordering|cached_usable_fallback_ips >/dev/null || true' \
+        'export_generation|refresh_config_exports' \
+        'doctor_json|print_doctor_json' \
+        'recover_json_contract|recover_now_json || true'
+    do
+        local name="${spec%%|*}" cmd="${spec#*|}"
+        case_json=$(bench_case_json "$name" "$cmd")
+        [[ "$case_json" == *'"ok":false'* ]] && overall=false
+        if [[ "$first" == true ]]; then
+            cases="    ${case_json}"
+            first=false
+        else
+            cases="${cases},\n    ${case_json}"
+        fi
+    done
+    printf '{\n  "ok": %s,\n  "mocked": %s,\n  "cases": [\n%b\n  ],\n  "budgets_ok": %s\n}\n' \
+        "$overall" "$mock" "$cases" "$overall"
+    [[ "$overall" == true ]]
+}
+
+bench_json() {
+    local mock=false tmp rc
+    [[ "${1:-}" == "--mock" || "${G2RAY_BENCH_MOCK:-0}" == "1" ]] && mock=true
+    if [[ "$mock" == "true" ]]; then
+        tmp="${G2RAY_BENCH_PREINIT_TMP:-}"
+        if [[ -z "$tmp" ]]; then
+            tmp=$(mktemp -d "${TMPDIR:-/tmp}/g2ray-bench.XXXXXX") || return 1
+        fi
+        (
+            export G2RAY_BENCH_ISOLATED=1
+            bench_rebind_runtime_paths "$tmp"
+            bench_json_impl true
+        )
+        rc=$?
+        rm -rf -- "$tmp"
+        return "$rc"
+    fi
+    bench_json_impl "$mock"
+}
+
 if [[ "${G2RAY_SOURCE_ONLY:-}" == "1" ]]; then
     return 0 2>/dev/null || exit 0
 fi
@@ -3647,6 +3885,15 @@ fi
 if [[ "${1:-}" == "--status" || "${1:-}" == "status" ]]; then
     print_doctor_json
     exit 0
+fi
+
+if [[ "${1:-}" == "--bench" || "${1:-}" == "bench" ]]; then
+    if [[ "${2:-}" == "--json" ]]; then
+        bench_json "${3:-}"
+    else
+        bench_json "${2:-}"
+    fi
+    exit $?
 fi
 
 if [[ "${1:-}" == "--print-subscription-url" || "${1:-}" == "subscription-url" ]]; then

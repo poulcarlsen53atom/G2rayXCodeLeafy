@@ -74,7 +74,7 @@ async function handleWake(request, env, ctx) {
   data.next_action_code = data.next_action_code || nextActionCodeFor(data, data.route_probe || {});
   const responseStatus = responseStatusFor(data);
   applyResponseHints(data, responseStatus, env);
-  const event = eventFromResult("wake", context.codespaceName, data);
+  const event = await enrichEventWithHistoryContext(env, eventFromResult("wake", context.codespaceName, data));
   const sideEffects = await queueHistorySideEffects(env, event, data, ctx);
   const notifications = await queueNotifications(env, event, ctx);
   await rememberSuccessfulWake(context.codespaceName, env, data);
@@ -134,7 +134,7 @@ async function handleHealth(request, env, ctx) {
   }, env);
   const responseStatus = responseStatusFor(data);
   applyResponseHints(data, responseStatus, env);
-  const event = eventFromResult("health", codespaceName, data);
+  const event = await enrichEventWithHistoryContext(env, eventFromResult("health", codespaceName, data));
   const sideEffects = await queueHistorySideEffects(env, event, data, ctx);
   const notifications = await queueNotifications(env, event, ctx);
 
@@ -830,6 +830,32 @@ function eventFromResult(kind, codespace, data) {
   };
 }
 
+async function enrichEventWithHistoryContext(env, event) {
+  if (!env.WAKER_KV || event.kind !== "health") return event;
+  try {
+    const existing = await readHistory(env, event.codespace);
+    const previousRouteState = existing.find((item) => item && typeof item.route_ready === "boolean");
+    const previousWasStuck =
+      previousRouteState &&
+      previousRouteState.route_ready === false &&
+      (
+        previousRouteState.route_http_status === 404 ||
+        previousRouteState.route_http_status === 0 ||
+        previousRouteState.route_failure_reason === "route_settling_404"
+      );
+    if (event.route_ready === true && previousWasStuck) {
+      return {
+        ...event,
+        route_ready_transition: true,
+        previous_route_http_status: previousRouteState.route_http_status ?? null
+      };
+    }
+  } catch {
+    return event;
+  }
+  return event;
+}
+
 async function queueHistorySideEffects(env, event, data, ctx) {
   if (!env.WAKER_KV) {
     return {
@@ -872,12 +898,34 @@ async function recordHistory(env, event) {
 
   try {
     const existing = await readHistory(env, event.codespace);
+    if (!shouldStoreHistoryEvent(env, event, existing)) return true;
     const next = [event, ...existing].slice(0, HISTORY_LIMIT);
     await env.WAKER_KV.put(historyKey(event.codespace), JSON.stringify(next));
     return true;
   } catch {
     return false;
   }
+}
+
+function shouldStoreHistoryEvent(env, event, existing) {
+  if (event.kind !== "health") return true;
+  const previous = Array.isArray(existing) ? existing[0] : null;
+  if (!previous || previous.kind !== "health") return true;
+  if (event.route_ready_transition) return true;
+  const same =
+    previous.ok === event.ok &&
+    previous.state === event.state &&
+    previous.reason === event.reason &&
+    previous.route_ready === event.route_ready &&
+    previous.route_http_status === event.route_http_status &&
+    previous.next_action_code === event.next_action_code;
+  if (!same) return true;
+  const sampleMs = configuredMs(env, "HEALTH_HISTORY_SAMPLE_MS", 300000, 0, 3600000);
+  if (sampleMs === 0) return false;
+  const previousTs = Date.parse(previous.ts || "");
+  const eventTs = Date.parse(event.ts || "");
+  if (!Number.isFinite(previousTs) || !Number.isFinite(eventTs)) return true;
+  return eventTs - previousTs >= sampleMs;
 }
 
 async function recordQuotaIncident(env, event, data) {
@@ -1102,6 +1150,7 @@ function hasNotificationChannels(env) {
 
 function shouldNotify(event) {
   if (event.reason === "github_token_rejected_or_missing_scope" || event.reason === "github_token_scope_missing") return true;
+  if (event.route_ready_transition) return true;
   if (event.kind !== "wake") return false;
   if (event.route_ready) return true;
   return event.route_http_status === 404 || !event.ok;
@@ -1119,6 +1168,7 @@ function notificationText(event) {
     `route_ready=${event.route_ready}`,
     route,
     event.reason ? `reason=${event.reason}` : null,
+    event.route_ready_transition ? `transition=route_ready_after_${event.previous_route_http_status || "stuck"}` : null,
     event.token_warning ? `warning=${event.token_warning}` : null,
     event.message ? `message=${event.message}` : null
   ].filter(Boolean).join("\n");
