@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { webcrypto } from "node:crypto";
 import worker from "../worker/codespace-waker/src/index.js";
 
 const originalFetch = globalThis.fetch;
+if (!globalThis.crypto) {
+  globalThis.crypto = webcrypto;
+}
 
 function makeRequest(path, secret = "secret") {
   return new Request(`https://worker.example${path}`, {
