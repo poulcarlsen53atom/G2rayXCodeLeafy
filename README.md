@@ -46,7 +46,7 @@ Want to use public nodes donated by other G2ray users? Import this raw newline-s
 https://raw.githubusercontent.com/shayanay80atomic/G2rayXCodeLeafy/main/configs.txt
 ```
 
-Community configs are public third-party endpoints. Treat them as untrusted, best-effort test nodes and do not use them for sensitive traffic.
+Community configs are public third-party endpoints. Treat them as untrusted, best-effort test nodes and do not use them for sensitive traffic. A donated VLESS link exposes live access credentials for that donor's node. Generate your own private configs for serious use.
 
 </details>
 
@@ -70,7 +70,7 @@ Donate your generated config directly from the CLI to share access with the comm
 
 | 🛠️ Configuration Optimizer |
 | :--- |
-| To finalize your setup, take the config received from the panel and visit **[NetLeafy](https://code-leafy.github.io/NetLeafy)**. Set the server mode to **G2ray** and paste your link to generate a fully optimized connection. |
+| To finalize your setup, take the config received from the panel and visit **[NetLeafy](https://code-leafy.github.io/NetLeafy)**. Set the server mode to **G2ray** and paste your link to generate a fully optimized connection. Pasting a VLESS link into any third-party tool shares live access details for that node; use only tools you trust, and rotate/regenerate afterward if you need to revoke access. |
 
 </div>
 
@@ -164,7 +164,7 @@ bash ./g2ray.sh
 
 GitHub can still stop a Codespace for idle timeout, quota, billing, manual stop, rebuild, or retention policy. No process inside the Codespace can restart it after that because all Codespace processes are stopped. To reduce surprise stops, set your GitHub Codespaces **Default idle timeout** to **240 minutes** in GitHub account settings.
 
-Before you get close to monthly quota exhaustion, also mark the Codespace as **Keep codespace** from the GitHub Codespaces page. GitHub quota exhaustion does not immediately mean deletion, but stopped Codespaces can still be removed by retention policy. The same VLESS configs survive into the next monthly reset only if the same Codespace name/domain survives.
+Before you get close to monthly quota exhaustion, also mark the Codespace as **Keep codespace** from the GitHub Codespaces page when that option is available. GitHub quota exhaustion does not immediately mean deletion, but stopped Codespaces can still be removed by retention policy. For org-owned or policy-managed Codespaces, the Keep option may be unavailable or overridden by organization retention rules; export or push anything important before quota exhaustion. The same VLESS configs survive into the next monthly reset only if the same Codespace name/domain survives.
 
 To change the idle timeout:
 
@@ -217,7 +217,6 @@ bash ./g2ray.sh start
 bash ./g2ray.sh export
 bash ./g2ray.sh --support-bundle
 bash ./g2ray.sh --print-subscription-url
-bash ./g2ray.sh publish-subscription --yes --push
 bash ./g2ray.sh latency-focus on
 bash ./g2ray.sh bench --json --mock
 ```
@@ -231,6 +230,12 @@ bash ./g2ray.sh bench --json --mock
 `--support-bundle` creates a redacted `.tar.gz` support bundle under `logs/`. It includes doctor JSON, diagnostics, structured event logs, route health, rolling route stats, route-settling history, and Xray logs while redacting VLESS links, UUIDs, bearer tokens, GitHub tokens, and wake secrets.
 
 `--print-subscription-url` prints the raw-GitHub URL where `configs-subscription-base64.txt` would be available if you publish that export yourself. Generated config exports are ignored by default because they contain live VLESS credentials; the base64 subscription is encoding, not encryption. Most VLESS clients cannot authenticate to a private GitHub raw URL, so a subscription URL is directly usable only when the file is publicly reachable or served through a client-compatible private endpoint. Prefer local/private distribution; if you intentionally publish a public subscription, rotate the UUID afterward when you want to revoke access, and do not publish `configs-to-copy-for-mobile.txt` or `configs-meta.json`.
+
+Dangerous public subscription publishing, only when you intentionally want public access:
+
+```bash
+bash ./g2ray.sh publish-subscription --yes --push
+```
 
 `publish-subscription --yes --push` is an explicit opt-in helper for clients that need one subscription URL they can refresh. It refreshes exports, force-stages only `configs-subscription-base64.txt`, commits it, pushes when `--push` is provided, then prints the same raw-GitHub subscription URL. Use it only when you intentionally want that repository/branch to expose the live configs; anyone who can read that URL can import them. To revoke a published subscription, generate a new config/UUID and publish again, or remove the file from the branch.
 
@@ -286,7 +291,7 @@ Cloudflare dashboard binding types:
 
 Optional Cloudflare dashboard bindings:
 
-- `WAKER_KV`: KV namespace binding for dashboard history.
+- `WAKER_KV`: KV namespace binding for dashboard history. Recommended for public deployments because it also enables failed wake-secret lockout and optional successful-wake cooldown; without KV, use a long random wake secret and rotate it if exposed.
 - `QUOTA_SURVIVAL_CRON_ENABLED`: **Plaintext** variable set to `true` only if you also configure a Cloudflare Cron Trigger and want conservative quota-reset checks.
 - `DISCORD_WEBHOOK_URL`: **Secret** variable for Discord alerts.
 - `TELEGRAM_BOT_TOKEN`: **Secret** variable for Telegram alerts.

@@ -76,22 +76,23 @@ async function handleWake(request, env, ctx) {
   applyResponseHints(data, responseStatus, env);
   const event = await enrichEventWithHistoryContext(env, eventFromResult("wake", context.codespaceName, data));
   const sideEffects = await queueHistorySideEffects(env, event, data, ctx);
+  const responseData = withQuotaIncidentResponseFields(data, sideEffects.quota_incident);
   const notifications = await queueNotifications(env, event, ctx);
-  await rememberSuccessfulWake(context.codespaceName, env, data);
+  await rememberSuccessfulWake(context.codespaceName, env, responseData);
 
   return json({
-    ...data,
+    ...responseData,
     history_enabled: Boolean(env.WAKER_KV),
     history_recorded: sideEffects.history_recorded,
     history_deferred: sideEffects.deferred,
     quota_incident_recorded: sideEffects.quota_incident_recorded,
     quota_drought_active: sideEffects.quota_incident
       ? sideEffects.quota_incident.quota_drought_active === true
-      : data.quota_blocked === true,
+      : responseData.quota_blocked === true,
     notification_status: notifications.status,
     notifications_deferred: notifications.deferred,
     notification_errors: notifications.errors
-  }, responseStatus, retryHeaders(data));
+  }, responseStatus, retryHeaders(responseData));
 }
 
 async function handleHealth(request, env, ctx) {
@@ -136,25 +137,26 @@ async function handleHealth(request, env, ctx) {
   applyResponseHints(data, responseStatus, env);
   const event = await enrichEventWithHistoryContext(env, eventFromResult("health", codespaceName, data));
   const sideEffects = await queueHistorySideEffects(env, event, data, ctx);
+  const responseData = withQuotaIncidentResponseFields(data, sideEffects.quota_incident);
   const notifications = await queueNotifications(env, event, ctx);
 
   return json({
-    ...data,
+    ...responseData,
     history_enabled: Boolean(env.WAKER_KV),
     history_recorded: sideEffects.history_recorded,
     history_deferred: sideEffects.deferred,
     quota_incident_recorded: sideEffects.quota_incident_recorded,
     quota_drought_active: sideEffects.quota_incident
       ? sideEffects.quota_incident.quota_drought_active === true
-      : data.quota_blocked === true,
+      : responseData.quota_blocked === true,
     notification_status: notifications.status,
     notifications_deferred: notifications.deferred,
     notification_errors: notifications.errors
-  }, responseStatus, retryHeaders(data));
+  }, responseStatus, retryHeaders(responseData));
 }
 
 async function handleHistory(request, env) {
-  const context = await requireAuthorizedContext(request, env);
+  const context = await requireAuthorizedContext(request, env, { githubToken: false });
   if (!context.ok) return json(context.body, context.status, retryHeaders(context.body));
 
   const history = await readHistory(env, context.codespaceName);
@@ -168,7 +170,8 @@ async function handleHistory(request, env) {
   }, 200);
 }
 
-async function requireAuthorizedContext(request, env) {
+async function requireAuthorizedContext(request, env, options = {}) {
+  const requireGithubToken = options.githubToken !== false;
   const suppliedSecret = await readSuppliedSecret(request);
 
   if (!env.WAKE_SECRET || !(await secretsEqual(suppliedSecret, env.WAKE_SECRET))) {
@@ -182,14 +185,14 @@ async function requireAuthorizedContext(request, env) {
     return { ok: false, status: 500, body: { ok: false, error: "missing_codespace_name" } };
   }
 
-  if (!env.GITHUB_TOKEN) {
+  if (requireGithubToken && !env.GITHUB_TOKEN) {
     return { ok: false, status: 500, body: { ok: false, error: "missing_github_token" } };
   }
 
   return {
     ok: true,
     codespaceName,
-    token: env.GITHUB_TOKEN
+    token: env.GITHUB_TOKEN || ""
   };
 }
 
@@ -671,6 +674,21 @@ function withSurvivalFields(data, env) {
   return next;
 }
 
+function withQuotaIncidentResponseFields(data, incident) {
+  if (!data || !incident || incident.quota_drought_active !== true) return data;
+  if (!incident.quota_reset_estimate_utc) return data;
+  const next = {
+    ...data,
+    quota_drought_active: true,
+    quota_reset_estimate_utc: incident.quota_reset_estimate_utc
+  };
+  next.survival_next_action = survivalNextActionFor(next);
+  if (next.quota_blocked === true) {
+    next.next_action = next.survival_next_action;
+  }
+  return next;
+}
+
 function currentDate(env, scheduledTime) {
   const candidate = env && env.TEST_NOW_UTC ? Date.parse(env.TEST_NOW_UTC) : Number.NaN;
   if (Number.isFinite(candidate)) return new Date(candidate);
@@ -701,18 +719,18 @@ function retentionRiskFor(retentionExpiresAt, retentionPeriodMinutes, now) {
 
 function survivalNextActionFor(data) {
   if (data.quota_blocked) {
-    return `Quota or billing is blocking starts. Mark this Codespace as Keep codespace in GitHub now, then retry after the estimated quota reset at ${data.quota_reset_estimate_utc}.`;
+    return `Quota or billing is blocking starts. If GitHub shows Keep codespace for this Codespace, enable it now, then retry after the estimated quota reset at ${data.quota_reset_estimate_utc}. Verify the exact reset in GitHub Billing.`;
   }
   if (data.reason === "codespace_not_found_or_token_cannot_access_it" || Number(data.status) === 404) {
     return "Codespace is missing or the token cannot access it. If GitHub deleted it, create a new Codespace and generate new configs.";
   }
   if (data.retention_risk === "urgent" || data.retention_risk === "warning") {
-    return "Mark this Codespace as Keep codespace in GitHub Codespaces so the same domain/configs can survive until quota resets.";
+    return "If GitHub shows Keep codespace for this Codespace, enable it so the same domain/configs can survive until quota resets. Org retention policy may override this.";
   }
   if (data.retention_risk === "unknown") {
-    return "Open GitHub Codespaces and confirm this Codespace is marked Keep codespace before quota runs out.";
+    return "Open GitHub Codespaces and confirm this Codespace can be marked Keep before quota runs out.";
   }
-  return "No quota survival action needed now. For best safety, mark this Codespace as Keep codespace before quota runs out.";
+  return "No quota survival action needed now. For best safety, use Keep codespace if GitHub offers it before quota runs out.";
 }
 
 function isTransientGithubStatusFailure(last) {

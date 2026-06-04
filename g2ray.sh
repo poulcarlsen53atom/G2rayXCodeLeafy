@@ -1480,7 +1480,7 @@ wait_for_xhttp_route_ready() {
     start=$(date +%s 2>/dev/null || printf '0')
     while true; do
         attempt=$(( attempt + 1 ))
-        read -r xcode xms < <(xhttp_probe_metrics external)
+        read -r xcode xms _probe_reason < <(xhttp_probe_metrics external)
         now=$(date +%s 2>/dev/null || printf '0')
         elapsed=$(( now - start ))
         if xhttp_status_usable "$xcode"; then
@@ -1641,6 +1641,17 @@ acquire_runtime_lock() {
             return 0
         fi
         lock_pid=$(cat "$RUNTIME_LOCK_DIR/pid" 2>/dev/null || true)
+        if [[ -z "$lock_pid" || ! "$lock_pid" =~ ^[0-9]+$ ]]; then
+            log_event WARN "runtime_lock_stale malformed pid=${lock_pid:-missing} op=${op}"
+            rm -f "$RUNTIME_LOCK_DIR/pid" "$RUNTIME_LOCK_DIR/op" 2>/dev/null || true
+            rmdir "$RUNTIME_LOCK_DIR" 2>/dev/null || true
+            if mkdir "$RUNTIME_LOCK_DIR" 2>/dev/null; then
+                printf '%s\n' "$$" > "$RUNTIME_LOCK_DIR/pid" 2>/dev/null || true
+                printf '%s\n' "$op" > "$RUNTIME_LOCK_DIR/op" 2>/dev/null || true
+                return 0
+            fi
+            continue
+        fi
         if [[ "$lock_pid" == "$$" ]]; then
             rm -f "$RUNTIME_LOCK_DIR/pid" "$RUNTIME_LOCK_DIR/op" 2>/dev/null || true
             rmdir "$RUNTIME_LOCK_DIR" 2>/dev/null || true
@@ -1832,7 +1843,7 @@ health_probe() {
     xray_running && engine="running"
     is_port_open && listener="open"
     code=$(curl_http_code "https://${PORT_DOMAIN}" 5)
-    read -r xcode xms < <(xhttp_probe_metrics external)
+    read -r xcode xms _probe_reason < <(xhttp_probe_metrics external)
     xhttp_status_usable "$xcode" && xhttp_route_usable=true
     log_event INFO "health engine=${engine} listener=${listener} external_code=${code:-0} xhttp_probe=${xcode:-0} xhttp_probe_ms=${xms:-0} xhttp_route_usable=${xhttp_route_usable} domain=${PORT_DOMAIN}"
 }
@@ -1862,7 +1873,7 @@ self_heal_once() {
         fi
     fi
 
-    read -r xcode xms < <(xhttp_probe_metrics external)
+    read -r xcode xms _probe_reason < <(xhttp_probe_metrics external)
     if xhttp_status_usable "$xcode"; then
         reset_route_bad_count
         reset_edge_bad_count
@@ -1958,7 +1969,17 @@ acquire_bg_tasks_lock() {
             return 0
         fi
         lock_pid=$(cat "$BG_TASKS_LOCK_DIR/pid" 2>/dev/null || true)
-        if [[ "$lock_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$lock_pid" 2>/dev/null; then
+        if [[ -z "$lock_pid" || ! "$lock_pid" =~ ^[0-9]+$ ]]; then
+            log_event WARN "background_lock_stale malformed pid=${lock_pid:-missing}"
+            rm -f "$BG_TASKS_LOCK_DIR/pid" 2>/dev/null || true
+            rmdir "$BG_TASKS_LOCK_DIR" 2>/dev/null || true
+            if mkdir "$BG_TASKS_LOCK_DIR" 2>/dev/null; then
+                printf '%s\n' "$$" > "$BG_TASKS_LOCK_DIR/pid" 2>/dev/null || true
+                return 0
+            fi
+            continue
+        fi
+        if ! kill -0 "$lock_pid" 2>/dev/null; then
             rm -f "$BG_TASKS_LOCK_DIR/pid" 2>/dev/null || true
             rmdir "$BG_TASKS_LOCK_DIR" 2>/dev/null || true
             continue
@@ -2913,8 +2934,8 @@ show_live_monitor() {
         if [[ -f "$CONFIG_FILE" && $((tick % 6)) -eq 0 ]]; then
             refresh_route_candidate_health >/dev/null 2>&1 || true
         fi
-        read -r local_code local_ms < <(xhttp_probe_metrics local)
-        read -r edge_code edge_ms < <(xhttp_probe_metrics external)
+        read -r local_code local_ms _probe_reason < <(xhttp_probe_metrics local)
+        read -r edge_code edge_ms _probe_reason < <(xhttp_probe_metrics external)
         xray_running && engine="running" || engine="stopped"
         is_port_open && listener="open" || listener="closed"
         refresh_screen
@@ -3180,8 +3201,8 @@ log_diagnostic_snapshot() {
     local reason="${1:-diagnostics}" local_probe local_ms edge_probe edge_ms engine listener supervisor ts
     local waker_url waker_codespace waker_fp waker_at
     ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z')
-    read -r local_probe local_ms < <(xhttp_probe_metrics local)
-    read -r edge_probe edge_ms < <(xhttp_probe_metrics external)
+    read -r local_probe local_ms _probe_reason < <(xhttp_probe_metrics local)
+    read -r edge_probe edge_ms _probe_reason < <(xhttp_probe_metrics external)
     xray_running && engine=running || engine=stopped
     is_port_open && listener=open || listener=closed
     supervisor=$(background_supervisor_status | tr '\r\n' ' ' | cut -c1-180)
@@ -3373,8 +3394,8 @@ show_diagnostics() {
 
     echo -e "\n  ${WHITE}${B}XHTTP Probes${NC}"
     local local_probe local_ms edge_probe edge_ms local_usable=false edge_usable=false
-    read -r local_probe local_ms < <(xhttp_probe_metrics local)
-    read -r edge_probe edge_ms < <(xhttp_probe_metrics external)
+    read -r local_probe local_ms _probe_reason < <(xhttp_probe_metrics local)
+    read -r edge_probe edge_ms _probe_reason < <(xhttp_probe_metrics external)
     xhttp_status_usable "$local_probe" && local_usable=true
     xhttp_status_usable "$edge_probe" && edge_usable=true
     echo -e "  Local OPTIONS : ${WHITE}HTTP ${local_probe}${NC} ${DIM}(${local_ms:-0}ms usable=${local_usable})${NC}"
@@ -3415,7 +3436,7 @@ show_diagnostics() {
                 echo -e "  ${DIM}...additional candidates skipped; set G2RAY_DIAGNOSTIC_MAX_FALLBACK_PROBES to raise this cap.${NC}"
                 break
             fi
-            read -r ip_probe ip_ms < <(xhttp_probe_metrics external "$ip")
+            read -r ip_probe ip_ms _probe_reason < <(xhttp_probe_metrics external "$ip")
             ip_usable=false
             xhttp_status_usable "$ip_probe" && ip_usable=true
             printf '  %-15s HTTP %-3s %4sms usable=%s\n' "$ip" "${ip_probe:-0}" "${ip_ms:-0}" "$ip_usable"
@@ -3504,11 +3525,11 @@ _recover_now_impl() {
 
     echo -ne "  ${DIM}|-${NC} Wait Route        : "
     if wait_for_xhttp_route_ready "recover_now" "$ROUTE_WAIT_SEC" >/dev/null 2>&1; then
-        read -r xcode xms < <(xhttp_probe_metrics external)
+        read -r xcode xms _probe_reason < <(xhttp_probe_metrics external)
         route_ready=true
         echo -e "${GREEN}Ready (HTTP ${xcode})${NC}"
     else
-        read -r xcode xms < <(xhttp_probe_metrics external)
+        read -r xcode xms _probe_reason < <(xhttp_probe_metrics external)
         echo -e "${YELLOW}Settling (HTTP ${xcode:-0})${NC}"
     fi
 
@@ -3516,11 +3537,11 @@ _recover_now_impl() {
         echo -ne "  ${DIM}|-${NC} Repair Route      : "
         repair_codespace_port_route >/dev/null 2>&1 || true
         if wait_for_xhttp_route_ready "recover_now_repair" "$FORCE_RECONNECT_ROUTE_WAIT_SEC" >/dev/null 2>&1; then
-            read -r xcode xms < <(xhttp_probe_metrics external)
+            read -r xcode xms _probe_reason < <(xhttp_probe_metrics external)
             route_ready=true
             echo -e "${GREEN}Ready (HTTP ${xcode})${NC}"
         else
-            read -r xcode xms < <(xhttp_probe_metrics external)
+            read -r xcode xms _probe_reason < <(xhttp_probe_metrics external)
             echo -e "${YELLOW}Still settling (HTTP ${xcode:-0})${NC}"
         fi
     fi
@@ -3580,7 +3601,7 @@ recover_now_json() {
     else
         recover_rc=$?
     fi
-    read -r xcode xms < <(xhttp_probe_metrics external)
+    read -r xcode xms _probe_reason < <(xhttp_probe_metrics external)
     if xhttp_status_usable "$xcode"; then
         route_ready=true
         status="ready"
@@ -3676,7 +3697,7 @@ _force_reconnect_impl() {
     for _i in 1 2 3 4; do
         code=$(curl_http_code "https://${PORT_DOMAIN}" 5)
         [[ "$code" != "000" && "$code" != "0" ]] && edge_reachable=true
-        read -r xcode xms < <(xhttp_probe_metrics external)
+        read -r xcode xms _probe_reason < <(xhttp_probe_metrics external)
         if xhttp_status_usable "$xcode"; then
             xhttp_route_usable=true
             break
@@ -3687,10 +3708,10 @@ _force_reconnect_impl() {
         repair_codespace_port_route >/dev/null 2>&1 || true
         sleep 3
         if wait_for_xhttp_route_ready "force_reconnect" "$FORCE_RECONNECT_ROUTE_WAIT_SEC" >/dev/null 2>&1; then
-            read -r xcode xms < <(xhttp_probe_metrics external)
+            read -r xcode xms _probe_reason < <(xhttp_probe_metrics external)
             xhttp_route_usable=true
         else
-            read -r xcode xms < <(xhttp_probe_metrics external)
+            read -r xcode xms _probe_reason < <(xhttp_probe_metrics external)
             xhttp_status_usable "$xcode" && xhttp_route_usable=true
         fi
     fi
@@ -3708,7 +3729,7 @@ _force_reconnect_impl() {
 
     [[ "$no_prompt" == "--no-prompt" ]] && { sleep 1; return "$failed"; }
     echo -ne "  ${DIM}Press Enter to return...${NC}"; read -r
-    return 0
+    return "$failed"
 }
 
 force_reconnect() {
@@ -3724,7 +3745,7 @@ _ensure_runtime_ready_impl() {
     PORT_DOMAIN="${CODESPACE_NAME}-${XRAY_PORT}.app.github.dev"
 
     if xray_listener_ready; then
-        read -r xcode xms < <(xhttp_probe_metrics external)
+        read -r xcode xms _probe_reason < <(xhttp_probe_metrics external)
         if xhttp_status_usable "$xcode"; then
             ensure_codespace_port_public >/dev/null 2>&1 \
                 || log_event WARN "runtime_ready reason=${reason} port_public_failed port=${XRAY_PORT}"
@@ -3741,7 +3762,7 @@ _ensure_runtime_ready_impl() {
             log_event INFO "runtime_ready reason=${reason} route_repaired"
             return 0
         fi
-        read -r xcode xms < <(xhttp_probe_metrics external)
+        read -r xcode xms _probe_reason < <(xhttp_probe_metrics external)
         log_event WARN "runtime_ready reason=${reason} route_still_unusable xhttp_probe=${xcode:-0} xhttp_probe_ms=${xms:-0} action=observe"
         return 1
     fi
@@ -3750,12 +3771,12 @@ _ensure_runtime_ready_impl() {
     if start_xray >/dev/null 2>&1 && wait_for_port >/dev/null 2>&1; then
         ensure_codespace_port_public >/dev/null 2>&1 \
             || log_event WARN "runtime_ready reason=${reason} port_public_failed port=${XRAY_PORT}"
-        read -r xcode xms < <(xhttp_probe_metrics external)
+        read -r xcode xms _probe_reason < <(xhttp_probe_metrics external)
         if ! xhttp_status_usable "$xcode"; then
             log_event WARN "runtime_ready reason=${reason} started_route_unusable xhttp_probe=${xcode:-0} xhttp_probe_ms=${xms:-0} action=repair"
             repair_codespace_port_route >/dev/null 2>&1 || true
             wait_for_xhttp_route_ready "$reason" >/dev/null 2>&1 || true
-            read -r xcode xms < <(xhttp_probe_metrics external)
+            read -r xcode xms _probe_reason < <(xhttp_probe_metrics external)
         fi
         if xhttp_status_usable "$xcode"; then
             reset_route_bad_count
@@ -3783,8 +3804,8 @@ print_doctor_json() {
     xray_running && engine=true
     is_port_open && listener=true
     [[ -f "$CONFIG_FILE" ]] && config_present=true
-    read -r local_probe local_ms < <(xhttp_probe_metrics local)
-    read -r edge_probe edge_ms < <(xhttp_probe_metrics external)
+    read -r local_probe local_ms _probe_reason < <(xhttp_probe_metrics local)
+    read -r edge_probe edge_ms _probe_reason < <(xhttp_probe_metrics external)
     supervisor=$(background_supervisor_status | tr '\r\n' ' ' | cut -c1-180)
     last_good=$(last_good_route_value)
     waker_url=$(waker_metadata_value worker_url)
@@ -4069,10 +4090,10 @@ if [[ "${1:-}" == "--silent-start" ]]; then
     if [[ ! -f "$CONFIG_FILE" ]]; then
         write_boot_status "no_config" "silent_start" "No config exists yet; open the panel and generate one." "0" "0"
     elif ensure_runtime_ready "silent_start" >/dev/null 2>&1; then
-        read -r _boot_code _boot_ms < <(xhttp_probe_metrics external)
+        read -r _boot_code _boot_ms _boot_reason < <(xhttp_probe_metrics external)
         write_boot_status "ready" "silent_start" "Xray started and the Codespaces route is usable." "${_boot_code:-0}" "${_boot_ms:-0}"
     else
-        read -r _boot_code _boot_ms < <(xhttp_probe_metrics external)
+        read -r _boot_code _boot_ms _boot_reason < <(xhttp_probe_metrics external)
         if [[ "${_boot_code:-0}" == "404" ]]; then
             write_boot_status "route_settling" "silent_start" "Xray is up, but GitHub's app route is still settling. Wait, check health, or run Recover Now." "${_boot_code:-0}" "${_boot_ms:-0}"
         else

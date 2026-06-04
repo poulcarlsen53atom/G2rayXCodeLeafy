@@ -533,10 +533,34 @@ async function testQuotaIncidentKeepsResetEstimateDuringActiveDroughtHealthCheck
   const body = await responseJson(response);
   assert.equal(response.status, 200);
   assert.equal(body.quota_drought_active, true);
+  assert.equal(body.quota_reset_estimate_utc, "2026-07-01T00:00:00Z");
   const history = await responseJson(await worker.fetch(makeRequest("/api/history"), env, {}));
   assert.equal(history.quota_incident.quota_drought_active, true);
   assert.equal(history.quota_incident.quota_reset_estimate_utc, "2026-07-01T00:00:00Z");
   console.log("PASS: Worker preserves active quota incident reset estimate across cheap health checks");
+}
+
+async function testHistoryWorksWithoutGithubToken() {
+  const kv = makeKv();
+  await kv.put("history:behavior-space", JSON.stringify([
+    {
+      ts: "2026-06-01T00:00:00.000Z",
+      kind: "health",
+      codespace: "behavior-space",
+      ok: true,
+      status: 200
+    }
+  ]));
+  const response = await worker.fetch(makeRequest("/api/history"), baseEnv({
+    GITHUB_TOKEN: "",
+    WAKER_KV: kv
+  }), {});
+  const body = await responseJson(response);
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(body.history_enabled, true);
+  assert.equal(body.history.length, 1);
+  console.log("PASS: Worker history works with valid wake secret even when GitHub token is missing");
 }
 
 async function testScheduledQuotaCronIsDisabledAndThrottledBeforeReset() {
@@ -1380,6 +1404,7 @@ try {
   await testMonthlyResetEstimateCrossesYear();
   await testKvQuotaIncidentHistoryRecordsBlockedAndRecovery();
   await testQuotaIncidentKeepsResetEstimateDuringActiveDroughtHealthChecks();
+  await testHistoryWorksWithoutGithubToken();
   await testScheduledQuotaCronIsDisabledAndThrottledBeforeReset();
   await testScheduledQuotaCronAttemptsOneNearResetWake();
   await testWakeFailureIncludesNextAction();

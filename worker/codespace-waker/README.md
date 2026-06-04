@@ -65,7 +65,7 @@ If you use the Cloudflare dashboard instead of Wrangler, add `CODESPACE_NAME` as
 
 Optional: add `CODESPACE_PORT` as a **Plaintext** variable only if you changed the panel's `XRAY_PORT`. Leave it unset for the default port `443`.
 
-Optional history: create a Cloudflare KV namespace and bind it as `WAKER_KV`. Without this binding, the dashboard still works but shows history as disabled. With `WAKER_KV`, it stores recent wake/health events, route HTTP status, latency, route wait time, and last failures under a per-Codespace key so the dashboard can show repeated HTTP `404` settling and latency trends. Identical health polls are sampled with `HEALTH_HISTORY_SAMPLE_MS` (default 5 minutes) so the history stays readable.
+Optional history: create a Cloudflare KV namespace and bind it as `WAKER_KV`. Without this binding, the dashboard still works but shows history as disabled. With `WAKER_KV`, it stores recent wake/health events, route HTTP status, latency, route wait time, and last failures under a per-Codespace key so the dashboard can show repeated HTTP `404` settling and latency trends. Identical health polls are sampled with `HEALTH_HISTORY_SAMPLE_MS` (default 5 minutes) so the history stays readable. `WAKER_KV` is also recommended for public deployments because it enables failed wake-secret lockout and optional successful-wake cooldown. Cloudflare KV is eventually consistent, so this is a practical anti-spam guard rather than a strict atomic security boundary.
 
 Quota survival history also uses `WAKER_KV`. When GitHub returns HTTP `402`, the Worker records the first quota block, latest quota block, estimated monthly reset, retention/deletion fields from GitHub, and the next later successful wake or health check. This helps confirm that the same Codespace survived into the next monthly reset.
 
@@ -149,7 +149,7 @@ For automation that only needs GitHub state and wants to avoid an external route
 - `next_action`: the fastest manual recovery step to try next.
 - `next_action_code`: stable machine-readable action code such as `retry_vless_config`, `wait_route_or_recover`, `rotate_github_token`, `wait_github_rate_limit`, or `wait_for_quota_reset`.
 - `quota_blocked: true`: GitHub returned HTTP `402`, so quota or billing is blocking the start.
-- `quota_reset_estimate_utc`: the next first-of-month UTC estimate for included-usage reset.
+- `quota_reset_estimate_utc`: a calendar-month reset estimate using the next first-of-month UTC. Verify the exact reset in GitHub Billing; GitHub billing data is authoritative.
 - `retention_period_minutes` / `retention_expires_at`: GitHub Codespaces retention fields when the API returns them.
 - `retention_risk`: `safe`, `warning`, `urgent`, or `unknown` based on `retention_expires_at`.
 - `survival_next_action`: what to do to preserve the same Codespace/configs through quota reset.
@@ -158,12 +158,12 @@ For automation that only needs GitHub state and wants to avoid an external route
 - `notification_status: "failed"`: notification delivery was attempted synchronously and `notification_errors` contains the delivery error.
 - `history_deferred: true`: KV history/quota incident writes were queued through Cloudflare `waitUntil`, so the dashboard response did not wait for storage writes.
 - `401`: Wrong wake secret, or GitHub rejected the stored token. Check the JSON `error`, `reason`, or `token_warning` field to tell which side rejected the request.
-- `402`: GitHub quota or billing blocked the start. Mark the Codespace as **Keep codespace**, wait for quota reset or adjust GitHub billing settings, then start the same Codespace again.
+- `402`: GitHub quota or billing blocked the start. If the option is available, mark the Codespace as **Keep codespace**, wait for quota reset or adjust GitHub billing settings, then start the same Codespace again. Org-owned or policy-managed Codespaces may have retention rules that override or hide this option.
 - `403`: GitHub token was accepted but cannot access Codespaces, commonly because the `codespace` scope is missing. The response reason may be `github_token_scope_missing`.
 - `404`: Codespace name is wrong or the token cannot access it.
 - `429`: Too many wrong wake-secret attempts, optional successful-wake cooldown, or GitHub rate limiting. Check `reason`, `retry_after_seconds`, and any `github_rate_limit_*` fields.
 
-Optional anti-spam setting: with `WAKER_KV` configured, set `WAKE_COOLDOWN_SECONDS` as a **Plaintext** variable if you want a successful wake to block repeated wake calls for a short period. Leave it unset to allow immediate manual retries. Any nonzero value below `60` is treated as `60` because Cloudflare KV expiration TTLs require at least 60 seconds.
+Optional anti-spam setting: with `WAKER_KV` configured, set `WAKE_COOLDOWN_SECONDS` as a **Plaintext** variable if you want a successful wake to block repeated wake calls for a short period. Leave it unset to allow immediate manual retries. Any nonzero value below `60` is treated as `60` because Cloudflare KV expiration TTLs require at least 60 seconds. For strict abuse protection on a public endpoint, use Cloudflare's native rate limiting or a Durable Object gate in addition to KV.
 
 ## Security Notes
 

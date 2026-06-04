@@ -8,6 +8,9 @@
 /configs-meta.json.*
 /g2ray-support-*.tar.gz
 /g2ray.sh.*
+/.env
+/.env.*
+/.dev.vars*
 /worker/codespace-waker/.dev.vars*
 /worker/codespace-waker/.env
 /worker/codespace-waker/.env.*

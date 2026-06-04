@@ -522,6 +522,9 @@ test_probe_and_gh_commands_are_bounded() {
 test_diagnostics_show_latency_and_supervisor_state() {
     grep_fixed 'xhttp_probe_metrics()' "$SCRIPT" \
         || fail 'diagnostics cannot measure XHTTP probe latency'
+    if grep -Eq 'read -r [^[:space:]]+ [^[:space:]]+ < <\(xhttp_probe_metrics' "$SCRIPT"; then
+        fail 'xhttp_probe_metrics callers must consume or discard the route reason field to keep JSON latency numeric'
+    fi
     grep_fixed 'CODESPACES_EDGE_PORT="${G2RAY_CODESPACES_EDGE_PORT:-443}"' "$SCRIPT" \
         || fail 'script does not define the external Codespaces HTTPS edge port separately from the internal Xray port'
     grep_fixed 'url="https://${PORT_DOMAIN}:${CODESPACES_EDGE_PORT}${path}"' "$SCRIPT" \

@@ -125,6 +125,21 @@ test_runtime_lock_serializes_operations_and_allows_reentry() {
     rm -f "$ran_file"
 
     rm -rf "$RUNTIME_LOCK_DIR"
+    mkdir -p "$RUNTIME_LOCK_DIR"
+    with_runtime_lock runtime_lock_probe || fail "runtime lock did not recover an empty lock directory"
+    grep -Fxq 'ran' "$ran_file" || fail "runtime operation did not run after empty lock recovery"
+    [[ ! -d "$RUNTIME_LOCK_DIR" ]] || fail "runtime lock was not released after empty lock recovery"
+    rm -f "$ran_file"
+
+    rm -rf "$RUNTIME_LOCK_DIR"
+    mkdir -p "$RUNTIME_LOCK_DIR"
+    printf 'not-a-pid\n' > "$RUNTIME_LOCK_DIR/pid"
+    with_runtime_lock runtime_lock_probe || fail "runtime lock did not recover malformed pid lock"
+    grep -Fxq 'ran' "$ran_file" || fail "runtime operation did not run after malformed lock recovery"
+    [[ ! -d "$RUNTIME_LOCK_DIR" ]] || fail "runtime lock was not released after malformed lock recovery"
+    rm -f "$ran_file"
+
+    rm -rf "$RUNTIME_LOCK_DIR"
     runtime_lock_inner() { printf 'inner\n' > "$ran_file"; }
     runtime_lock_outer() { with_runtime_lock runtime_lock_inner; }
     with_runtime_lock runtime_lock_outer || fail "runtime lock was not reentrant for nested runtime operations"
@@ -697,7 +712,16 @@ test_config_metadata_sanitizes_invalid_max_fallback_links() {
 test_bench_json_reports_deterministic_budgets() {
     reset_runtime_paths
     local output bench_file bench_root command_output
-    output="$(G2RAY_BENCH_MOCK=1 bench_json --mock)"
+    if ! output="$(
+        G2RAY_BENCH_MOCK=1 \
+        G2RAY_BENCH_BUDGET_EXPORT_MS=10000 \
+        G2RAY_BENCH_BUDGET_DOCTOR_MS=6000 \
+        G2RAY_BENCH_BUDGET_RECOVER_JSON_MS=6000 \
+        bench_json --mock
+    )"; then
+        printf '%s\n' "$output"
+        fail "bench_json returned nonzero under mock budgets"
+    fi
     bench_file="$TMP_ROOT/bench.json"
     printf '%s\n' "$output" > "$bench_file"
     python - "$bench_file" <<'PY' || fail "bench_json did not return valid budget JSON"
@@ -720,7 +744,17 @@ PY
     command_output="$TMP_ROOT/bench-command.json"
     mkdir -p "$bench_root"
     cp "$SCRIPT" "$bench_root/g2ray.sh"
-    (cd "$bench_root" && env -u G2RAY_SOURCE_ONLY bash ./g2ray.sh bench --json --mock > "$command_output")
+    if ! (
+        cd "$bench_root" && \
+        env -u G2RAY_SOURCE_ONLY \
+            G2RAY_BENCH_BUDGET_EXPORT_MS=10000 \
+            G2RAY_BENCH_BUDGET_DOCTOR_MS=6000 \
+            G2RAY_BENCH_BUDGET_RECOVER_JSON_MS=6000 \
+            bash ./g2ray.sh bench --json --mock > "$command_output"
+    ); then
+        cat "$command_output" 2>/dev/null || true
+        fail "bench --json --mock command returned nonzero under mock budgets"
+    fi
     [[ ! -e "$bench_root/data" && ! -e "$bench_root/logs" ]] \
         || fail "bench --json --mock created runtime dirs in the command working tree"
     python - "$command_output" <<'PY' || fail "bench --json --mock command did not return valid passing JSON"
@@ -730,7 +764,17 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 assert data["ok"] is True
 assert data["budgets_ok"] is True
 PY
-    output="$(G2RAY_BENCH_BUDGET_CONFIG_PATH_MS=not-a-number G2RAY_BENCH_MOCK=1 bench_json --mock)"
+    if ! output="$(
+        G2RAY_BENCH_BUDGET_CONFIG_PATH_MS=not-a-number \
+        G2RAY_BENCH_BUDGET_EXPORT_MS=10000 \
+        G2RAY_BENCH_BUDGET_DOCTOR_MS=6000 \
+        G2RAY_BENCH_BUDGET_RECOVER_JSON_MS=6000 \
+        G2RAY_BENCH_MOCK=1 \
+        bench_json --mock
+    )"; then
+        printf '%s\n' "$output"
+        fail "bench_json failed while sanitizing invalid budget environment values"
+    fi
     printf '%s\n' "$output" > "$bench_file"
     python - "$bench_file" <<'PY' || fail "bench_json did not sanitize invalid budget environment values"
 import json, sys
@@ -866,13 +910,14 @@ test_doctor_json_reports_probe_state() {
     is_port_open() { return 0; }
     xhttp_probe_metrics() {
         if [[ "${1:-}" == "local" ]]; then
-            printf '200 1\n'
+            printf '200 1 ready\n'
         else
-            printf '404 31\n'
+            printf '404 31 route_settling_404\n'
         fi
     }
     background_supervisor_status() { printf 'pid=1 running=heartbeat version=ok token=present heartbeat_age=1s\n'; }
     output="$(print_doctor_json)"
+    python -m json.tool <<< "$output" >/dev/null || fail "doctor json became invalid when probe reason is present"
     grep -Fq '"codespace": "behavior-space"' <<< "$output" || fail "doctor json missing codespace"
     grep -Fq '"edge_probe": {"http_status": 404' <<< "$output" || fail "doctor json missing edge probe"
     grep -Fq '"next_action_code": "wait_route_or_recover"' <<< "$output" || fail "doctor json missing actionable next_action_code"
@@ -965,7 +1010,7 @@ test_recover_now_json_reports_ready_contract() {
         xray_listener_ready() { return 0; }
         ensure_codespace_port_public() { return 0; }
         wait_for_xhttp_route_ready() { return 0; }
-        xhttp_probe_metrics() { printf '200 7\n'; }
+        xhttp_probe_metrics() { printf '200 7 ready\n'; }
         refresh_route_candidate_health() { return 0; }
         refresh_config_exports() { return 0; }
         log_diagnostic_snapshot() { return 0; }
@@ -992,7 +1037,7 @@ test_recover_now_json_reports_settling_contract() {
         ensure_codespace_port_public() { return 0; }
         wait_for_xhttp_route_ready() { return 1; }
         repair_codespace_port_route() { return 0; }
-        xhttp_probe_metrics() { printf '404 33\n'; }
+        xhttp_probe_metrics() { printf '404 33 route_settling_404\n'; }
         refresh_route_candidate_health() { return 0; }
         refresh_config_exports() { return 0; }
         log_diagnostic_snapshot() { return 0; }
@@ -1020,7 +1065,7 @@ test_recover_now_json_treats_followup_ready_probe_as_success() {
         PORT_DOMAIN="behavior-space-443.app.github.dev"
         XRAY_PORT=443
         recover_now() { return 1; }
-        xhttp_probe_metrics() { printf '200 9\n'; }
+        xhttp_probe_metrics() { printf '200 9 ready\n'; }
         xray_running() { return 0; }
         is_port_open() { return 0; }
         output="$(recover_now_json)"
@@ -1203,11 +1248,13 @@ test_support_bundle_includes_rotated_logs() {
 
 test_support_bundle_marks_unreadable_optional_logs() {
     reset_runtime_paths
+    local was_unreadable=0
     printf 'live app log\n' > "$LOG_FILE"
     printf '{"ts":"2026-05-30T00:00:00Z","level":"INFO","event":"live","message":"live"}\n' > "$STRUCTURED_LOG_FILE"
     printf 'live diagnostic\n' > "$DIAGNOSTIC_LOG_FILE"
     printf 'root-owned style xray log\n' > "$LOG_DIR/xray.log"
     chmod 000 "$LOG_DIR/xray.log" 2>/dev/null || true
+    [[ ! -r "$LOG_DIR/xray.log" ]] && was_unreadable=1
     XRAY_BIN="$TMP_ROOT/missing-xray"
     xray_running() { return 0; }
     is_port_open() { return 0; }
@@ -1224,10 +1271,10 @@ test_support_bundle_marks_unreadable_optional_logs() {
     mkdir -p "$extract"
     tar -xzf "$bundle" -C "$extract"
     [[ -s "$extract/logs/xray.log" ]] || fail "support bundle missing marker for unreadable optional log"
-    if [[ -r "$LOG_DIR/xray.log" ]]; then
-        grep -Fq 'root-owned style xray log' "$extract/logs/xray.log" || fail "support bundle did not copy readable xray log"
-    else
+    if [[ "$was_unreadable" == "1" ]]; then
         grep -Fq 'unreadable:' "$extract/logs/xray.log" || fail "support bundle did not mark unreadable optional log"
+    else
+        grep -Fq 'root-owned style xray log' "$extract/logs/xray.log" || fail "support bundle did not copy readable xray log"
     fi
     pass "support bundle marks unreadable optional logs"
 }
