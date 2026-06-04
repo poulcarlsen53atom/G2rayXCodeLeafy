@@ -450,6 +450,62 @@ test_route_health_refresh_preserves_cache_when_all_candidates_are_cooled_down() 
     pass "route health refresh preserves previous cache when all candidates are cooled down"
 }
 
+test_route_health_refresh_preserves_cache_when_all_probes_are_unusable() {
+    reset_runtime_paths
+    printf '{}\n' > "$CONFIG_FILE"
+    PORT_DOMAIN="behavior-space-443.app.github.dev"
+    ROUTE_MONITOR_MAX_CANDIDATES=2
+    ROUTE_PROBE_CONCURRENCY=2
+    ROUTE_FAILURE_COOLDOWN_SEC=0
+    local original_resolver original_probe
+    original_resolver="$(declare -f resolve_domain_ips_with_sources)"
+    original_probe="$(declare -f xhttp_probe_metrics)"
+    printf '2026-05-30T00:00:00Z\t20.0.0.1\t200\t50\ttrue\tdns\tready\n' > "$ROUTE_HEALTH_FILE"
+    resolve_domain_ips_with_sources() {
+        printf 'dns\t20.0.0.2\n'
+        printf 'dns\t20.0.0.3\n'
+    }
+    xhttp_probe_metrics() { printf '404 25 route_settling_404\n'; }
+
+    refresh_route_candidate_health || fail "route health refresh failed during all-404 settling"
+    eval "$original_resolver"
+    eval "$original_probe"
+    grep -Fq $'20.0.0.1\t200\t50\ttrue' "$ROUTE_HEALTH_FILE" \
+        || fail "route health refresh replaced the last known-good cache when every probe was unusable"
+    ! grep -Fq $'20.0.0.2\t404' "$ROUTE_HEALTH_FILE" \
+        || fail "all-unusable refresh should not replace health cache with temporary 404 probes"
+    pass "route health refresh preserves previous cache when every probe is temporarily unusable"
+}
+
+test_route_health_refresh_mixes_provider_candidates_before_stale_cache_cap() {
+    reset_runtime_paths
+    printf '{}\n' > "$CONFIG_FILE"
+    PORT_DOMAIN="behavior-space-443.app.github.dev"
+    ROUTE_MONITOR_MAX_CANDIDATES=3
+    ROUTE_PROBE_CONCURRENCY=1
+    local original_provider original_probe probed_file
+    original_provider="$(declare -f resolve_dns_provider_ips_with_sources)"
+    original_probe="$(declare -f xhttp_probe_metrics)"
+    probed_file="$TMP_ROOT/probed-provider-mix.txt"
+    printf '2026-05-30T00:00:00Z\t20.0.0.1\t200\t500\ttrue\tcache\tready\n' > "$ROUTE_HEALTH_FILE"
+    printf '2026-05-30T00:00:00Z\t20.0.0.2\t200\t501\ttrue\tcache\tready\n' >> "$ROUTE_HEALTH_FILE"
+    printf '2026-05-30T00:00:00Z\t20.0.0.3\t200\t502\ttrue\tcache\tready\n' >> "$ROUTE_HEALTH_FILE"
+    resolve_dns_provider_ips_with_sources() {
+        printf 'dns\t20.0.0.9\n'
+    }
+    xhttp_probe_metrics() {
+        printf '%s\n' "$2" >> "$probed_file"
+        printf '200 10 ready\n'
+    }
+
+    refresh_route_candidate_health || fail "route health refresh failed with provider/cache mix"
+    eval "$original_provider"
+    eval "$original_probe"
+    grep -Fxq '20.0.0.9' "$probed_file" \
+        || fail "fresh provider candidate was starved by stale cached routes under the probe cap"
+    pass "route health refresh mixes provider candidates before stale cache can fill the cap"
+}
+
 test_route_preference_write_failures_return_failure() {
     (
         reset_runtime_paths
@@ -689,6 +745,42 @@ if decoded != [sys.argv[2], sys.argv[3]]:
     raise SystemExit(decoded)
 PY
     pass "config exports produce stable mobile and base64 subscription artifacts"
+}
+
+test_generated_links_follow_configured_xhttp_path() {
+    reset_runtime_paths
+    BASE_DIR="$TMP_ROOT"
+    MOBILE_CONFIG_FILE="$BASE_DIR/configs-to-copy-for-mobile.txt"
+    SUBSCRIPTION_FILE="$BASE_DIR/configs-subscription-base64.txt"
+    CONFIG_META_FILE="$BASE_DIR/configs-meta.json"
+    PORT_DOMAIN="behavior-space-443.app.github.dev"
+    GITHUB_USER="tester"
+    jq() { printf '/custom\n'; }
+    printf '11111111-2222-3333-4444-555555555555\n' > "$UUID_FILE"
+    cat > "$CONFIG_FILE" <<'JSON'
+{
+  "inbounds": [
+    {
+      "tag": "vless-in",
+      "streamSettings": {
+        "xhttpSettings": {
+          "path": "/custom"
+        }
+      }
+    }
+  ]
+}
+JSON
+
+    local link
+    link="$(generate_link_for_address "20.0.0.1" "-ip1")"
+    unset -f jq
+    [[ "$link" == *"path=%2Fcustom"* ]] \
+        || fail "generated VLESS link did not use configured XHTTP path: $link"
+    write_config_exports_from_links "$link" >/dev/null
+    grep -Fq 'path=%2Fcustom' "$MOBILE_CONFIG_FILE" \
+        || fail "mobile export did not preserve configured XHTTP path"
+    pass "generated links follow configured XHTTP path"
 }
 
 test_config_metadata_sanitizes_invalid_max_fallback_links() {
@@ -1269,6 +1361,8 @@ test_blacklisted_route_is_excluded_from_cached_exports
 test_manual_route_candidates_are_validated_and_resettable
 test_route_preferences_clear_matching_cooldowns
 test_route_health_refresh_preserves_cache_when_all_candidates_are_cooled_down
+test_route_health_refresh_preserves_cache_when_all_probes_are_unusable
+test_route_health_refresh_mixes_provider_candidates_before_stale_cache_cap
 test_route_preference_write_failures_return_failure
 test_pinned_route_is_a_durable_candidate_source
 test_cached_route_health_is_a_durable_candidate_source
@@ -1281,6 +1375,7 @@ test_xhttp_config_path_is_cached_by_config_content
 test_boot_status_helpers_record_silent_start_result
 test_config_exports_write_local_only_metadata
 test_config_exports_are_stable_client_artifacts
+test_generated_links_follow_configured_xhttp_path
 test_config_metadata_sanitizes_invalid_max_fallback_links
 test_bench_json_reports_deterministic_budgets
 test_low_overhead_mode_suppresses_info_logs

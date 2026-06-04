@@ -2370,12 +2370,28 @@ JSONEOF
     refresh_config_exports >/dev/null 2>&1 || true
 }
 
+url_encode_query_value() {
+    local value="$1" encoded="" i char hex
+    local LC_ALL=C
+    for ((i = 0; i < ${#value}; i++)); do
+        char="${value:i:1}"
+        case "$char" in
+            [a-zA-Z0-9.~_-]) encoded+="$char" ;;
+            *) printf -v hex '%%%02X' "'$char"; encoded+="$hex" ;;
+        esac
+    done
+    printf '%s' "$encoded"
+}
+
 generate_link_for_address() {
-    local address="$1" label_suffix="${2:-}" uuid
+    local address="$1" label_suffix="${2:-}" uuid path encoded_path
     uuid=$(cat "$UUID_FILE" 2>/dev/null) || { printf ''; return 1; }
     [[ -z "$uuid" ]] && { printf ''; return 1; }
-    printf 'vless://%s@%s:%s?encryption=none&security=tls&sni=%s&fp=chrome&alpn=h2&insecure=0&allowInsecure=0&type=xhttp&host=%s&path=%%2F&mode=packet-up#G2rayXCodeLeafy|%s' \
-        "$uuid" "$address" "$CODESPACES_EDGE_PORT" "$PORT_DOMAIN" "$PORT_DOMAIN" "${GITHUB_USER:-User}${label_suffix}"
+    path=$(xhttp_config_path)
+    [[ "$path" == /* ]] || path="/${path}"
+    encoded_path=$(url_encode_query_value "$path")
+    printf 'vless://%s@%s:%s?encryption=none&security=tls&sni=%s&fp=chrome&alpn=h2&insecure=0&allowInsecure=0&type=xhttp&host=%s&path=%s&mode=packet-up#G2rayXCodeLeafy|%s' \
+        "$uuid" "$address" "$CODESPACES_EDGE_PORT" "$PORT_DOMAIN" "$PORT_DOMAIN" "$encoded_path" "${GITHUB_USER:-User}${label_suffix}"
 }
 
 generate_domain_link() {
@@ -2613,9 +2629,39 @@ probe_route_candidate_worker() {
     printf '%s\t%s\t%s\t%s\t%s\n' "$ip" "${source:-probe}" "${code:-0}" "${ms:-0}" "$reason" > "$outfile"
 }
 
+route_refresh_probe_candidates() {
+    local candidates="$1" max="${2:-24}"
+    [[ "$max" =~ ^[0-9]+$ && "$max" -gt 0 ]] || max=24
+    printf '%s\n' "$candidates" | awk -F '\t' -v max="$max" '
+        function store(bucket, line, ip) {
+            if (bucket == 1) { b1[++n1] = line; i1[n1] = ip }
+            else if (bucket == 2) { b2[++n2] = line; i2[n2] = ip }
+            else if (bucket == 3) { b3[++n3] = line; i3[n3] = ip }
+            else { b4[++n4] = line; i4[n4] = ip }
+        }
+        function emit(line, ip) {
+            if (count >= max || ip == "" || seen[ip]++) return
+            print line
+            count++
+        }
+        NF >= 2 {
+            if ($1 == "pinned" || $1 == "manual") store(1, $0, $2)
+            else if ($1 == "cache") store(3, $0, $2)
+            else if ($1 == "builtin") store(4, $0, $2)
+            else store(2, $0, $2)
+        }
+        END {
+            for (idx = 1; idx <= n1; idx++) emit(b1[idx], i1[idx])
+            for (idx = 1; idx <= n2; idx++) emit(b2[idx], i2[idx])
+            for (idx = 1; idx <= n3; idx++) emit(b3[idx], i3[idx])
+            for (idx = 1; idx <= n4; idx++) emit(b4[idx], i4[idx])
+        }
+    '
+}
+
 refresh_route_candidate_health() {
     [[ -f "$CONFIG_FILE" ]] || return 0
-    local candidates source ip ip_probe ip_ms reason count=0 max route_health_tmp best_ip="" best_code=0 best_ms=99999999
+    local candidates probe_candidates source ip ip_probe ip_ms reason count=0 max route_health_tmp best_ip="" best_code=0 best_ms=99999999
     local concurrency pids=() files=() active=0 file result probed_count=0
     max=$(route_monitor_max_candidates)
     concurrency="$ROUTE_PROBE_CONCURRENCY"
@@ -2648,6 +2694,7 @@ refresh_route_candidate_health() {
         active=0
     }
 
+    probe_candidates=$(route_refresh_probe_candidates "$candidates" "$max")
     while IFS=$'\t' read -r source ip; do
         [[ -n "$ip" ]] || continue
         candidate_blacklisted "$ip" && continue
@@ -2662,11 +2709,17 @@ refresh_route_candidate_health() {
             collect_route_probe_batch
         fi
         (( count >= max )) && break
-    done <<< "$candidates"
+    done <<< "$probe_candidates"
     (( active > 0 )) && collect_route_probe_batch
     if (( probed_count == 0 )); then
         rm -f "$route_health_tmp" 2>/dev/null || true
         log_event WARN "route_candidate_monitor skipped_all_candidates count=${count} max=${max}"
+        return 0
+    fi
+    if [[ -z "$best_ip" && -s "$ROUTE_HEALTH_FILE" ]] \
+        && awk -F '\t' '$5 == "true" { found=1 } END { exit found ? 0 : 1 }' "$ROUTE_HEALTH_FILE" 2>/dev/null; then
+        rm -f "$route_health_tmp" 2>/dev/null || true
+        log_event WARN "route_candidate_monitor all_unusable_preserved_cache count=${count} max=${max}"
         return 0
     fi
     mv "$route_health_tmp" "$ROUTE_HEALTH_FILE"
