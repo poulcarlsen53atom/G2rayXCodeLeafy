@@ -1609,6 +1609,11 @@ test_devcontainer_tooling_is_not_duplicated() {
     fi
     grep_fixed 'gh codespace ssh' "$README" \
         || fail 'README does not document remote Codespace SSH access'
+    grep_fixed 'socks5://127.0.0.1:10808' "$README" \
+        || fail 'README does not document the working proxy scheme for gh codespace ssh/rebuild'
+    if grep_fixed 'socks5h://127.0.0.1:10808' "$README"; then
+        fail 'README still documents socks5h for gh codespace ssh/rebuild, which breaks Codespaces tunnel RPC on this setup'
+    fi
     grep_fixed '.devcontainer/Dockerfile text eol=lf' "$ROOT_DIR/.gitattributes" \
         || fail 'Dockerfile line endings are not pinned to LF'
     grep_fixed 'assets/message.txt text eol=lf' "$ROOT_DIR/.gitattributes" \

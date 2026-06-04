@@ -113,20 +113,21 @@ gh codespace ssh -c <CODESPACE_NAME> -- \
   "cd /workspaces/G2rayXCodeLeafy && bash ./g2ray.sh --doctor-json"
 ```
 
-If your network blocks direct Codespaces access, run the GitHub CLI through your local SOCKS proxy before calling `gh`:
+If your network blocks direct Codespaces access, run the GitHub CLI through your local SOCKS proxy before calling `gh`.
+For `gh codespace ssh` and `gh codespace rebuild`, use `socks5://` rather than `socks5h://`; the GitHub Codespaces tunnel RPC can fail if DNS is delegated to the SOCKS proxy.
 
 ```bash
-export HTTPS_PROXY=socks5h://127.0.0.1:10808
-export HTTP_PROXY=socks5h://127.0.0.1:10808
-export ALL_PROXY=socks5h://127.0.0.1:10808
+export HTTPS_PROXY=socks5://127.0.0.1:10808
+export HTTP_PROXY=socks5://127.0.0.1:10808
+export ALL_PROXY=socks5://127.0.0.1:10808
 ```
 
 PowerShell:
 
 ```powershell
-$env:HTTPS_PROXY = "socks5h://127.0.0.1:10808"
-$env:HTTP_PROXY = "socks5h://127.0.0.1:10808"
-$env:ALL_PROXY = "socks5h://127.0.0.1:10808"
+$env:HTTPS_PROXY = "socks5://127.0.0.1:10808"
+$env:HTTP_PROXY = "socks5://127.0.0.1:10808"
+$env:ALL_PROXY = "socks5://127.0.0.1:10808"
 ```
 
 `gh codespace ssh` is GitHub-authenticated remote access, not a public SSH server. Do not forward SSH publicly.
