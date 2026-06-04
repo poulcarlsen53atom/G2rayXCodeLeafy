@@ -90,6 +90,47 @@ The panel writes copy-ready configs and a base64 subscription file inside your C
 
 If browser Codespaces stays on a loading screen for a long time, open the same Codespace in **VS Code Desktop** from the GitHub Codespaces page. The panel runs the same way there and is often faster on slow browser sessions.
 
+### Remote Control From Another Computer
+
+This devcontainer includes the official `sshd` feature so authenticated GitHub CLI sessions can control the Codespace remotely. After pulling a version with this feature, rebuild the Codespace once from GitHub or with:
+
+```bash
+gh codespace rebuild -c <CODESPACE_NAME> --full
+```
+
+Then connect from another computer:
+
+```bash
+gh auth login
+gh auth refresh -h github.com -s codespace
+gh codespace ssh -c <CODESPACE_NAME>
+```
+
+Run one-off checks without opening the panel:
+
+```bash
+gh codespace ssh -c <CODESPACE_NAME> -- \
+  "cd /workspaces/G2rayXCodeLeafy && bash ./g2ray.sh --doctor-json"
+```
+
+If your network blocks direct Codespaces access, run the GitHub CLI through your local SOCKS proxy before calling `gh`:
+
+```bash
+export HTTPS_PROXY=socks5h://127.0.0.1:10808
+export HTTP_PROXY=socks5h://127.0.0.1:10808
+export ALL_PROXY=socks5h://127.0.0.1:10808
+```
+
+PowerShell:
+
+```powershell
+$env:HTTPS_PROXY = "socks5h://127.0.0.1:10808"
+$env:HTTP_PROXY = "socks5h://127.0.0.1:10808"
+$env:ALL_PROXY = "socks5h://127.0.0.1:10808"
+```
+
+`gh codespace ssh` is GitHub-authenticated remote access, not a public SSH server. Do not forward SSH publicly.
+
 <details>
 <summary><kbd>⚙️</kbd> Environment Configuration</summary>
 

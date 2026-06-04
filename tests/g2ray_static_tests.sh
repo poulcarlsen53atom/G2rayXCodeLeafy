@@ -1602,6 +1602,13 @@ test_devcontainer_tooling_is_not_duplicated() {
     fi
     grep_fixed 'ghcr.io/devcontainers/features/github-cli:1' "$ROOT_DIR/.devcontainer/devcontainer.json" \
         || fail 'devcontainer no longer installs gh through the github-cli feature'
+    grep_fixed 'ghcr.io/devcontainers/features/sshd:1' "$ROOT_DIR/.devcontainer/devcontainer.json" \
+        || fail 'devcontainer no longer enables sshd for gh codespace ssh remote access'
+    if grep_fixed 'openssh-server' "$ROOT_DIR/.devcontainer/Dockerfile"; then
+        fail 'Dockerfile manually installs openssh-server instead of using the devcontainer sshd feature'
+    fi
+    grep_fixed 'gh codespace ssh' "$README" \
+        || fail 'README does not document remote Codespace SSH access'
     grep_fixed '.devcontainer/Dockerfile text eol=lf' "$ROOT_DIR/.gitattributes" \
         || fail 'Dockerfile line endings are not pinned to LF'
     grep_fixed 'assets/message.txt text eol=lf' "$ROOT_DIR/.gitattributes" \
