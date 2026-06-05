@@ -1295,7 +1295,7 @@ async function waitForXhttpRoute(name, port, env) {
     error: "not_checked"
   };
 
-  while (Date.now() < deadline) {
+  while (attempts === 0 || Date.now() < deadline) {
     attempts += 1;
     last = await probeXhttpRoute(name, port, attempts, startedAt);
     if (last.usable) {
