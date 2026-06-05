@@ -175,7 +175,7 @@ test_support_bundle_has_safe_entrypoint() {
         || fail 'support bundle creator has no redaction helper'
     grep_fixed '--support-bundle' "$SCRIPT" \
         || fail 'script does not expose support bundle creation as a headless command'
-    grep_fixed 'Sensitive VLESS links, UUIDs, bearer tokens, GitHub tokens, and wake secrets are redacted.' "$SCRIPT" \
+    grep_fixed 'Sensitive VLESS links, UUIDs, bearer tokens, GitHub tokens, wake secrets, and network identifiers are redacted by default.' "$SCRIPT" \
         || fail 'support bundle metadata does not explain redaction'
     pass 'support bundle has safe headless entrypoint'
 }

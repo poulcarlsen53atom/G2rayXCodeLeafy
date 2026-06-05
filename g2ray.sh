@@ -237,6 +237,15 @@ route_export_revalidate_top_cached_enabled() {
     esac
 }
 
+support_include_network_enabled() {
+    local value
+    value=$(printf '%s' "${G2RAY_SUPPORT_INCLUDE_NETWORK:-0}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+    case "$value" in
+        1|true|yes|on|enabled) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 log_structured_event() {
     local ts="$1" level="$2" msg="$3" event
     event=$(printf '%s' "$msg" | awk '{print $1; exit}' | tr -cd 'A-Za-z0-9_.:-')
@@ -3348,11 +3357,31 @@ redact_sensitive_text() {
         -e 's#(^|[^0-9A-Fa-f])([0-9A-Fa-f]{48,})([^0-9A-Fa-f]|$)#\1<hex-secret-redacted>\3#g'
 }
 
+sed_literal_pattern() {
+    printf '%s' "${1:-}" | sed -E 's#[][\\.^$*+?{}|()/#]#\\&#g'
+}
+
+redact_support_text() {
+    local codespace_re domain_re sed_args=()
+    if support_include_network_enabled; then
+        redact_sensitive_text
+        return 0
+    fi
+    codespace_re=$(sed_literal_pattern "$CODESPACE_NAME")
+    domain_re=$(sed_literal_pattern "$PORT_DOMAIN")
+    [[ -n "$codespace_re" ]] && sed_args+=(-e "s#${codespace_re}#<codespace-redacted>#g")
+    [[ -n "$domain_re" ]] && sed_args+=(-e "s#${domain_re}#<codespaces-domain-redacted>#g")
+    redact_sensitive_text | sed -E \
+        "${sed_args[@]}" \
+        -e 's#[A-Za-z0-9][A-Za-z0-9-]*-[0-9]+\.app\.github\.dev#<codespaces-domain-redacted>#g' \
+        -e 's#(^|[^0-9])([0-9]{1,3}\.){3}[0-9]{1,3}([^0-9]|$)#\1<ip-redacted>\3#g'
+}
+
 copy_redacted_file() {
     local src="$1" dst="$2"
     mkdir -p "$(dirname "$dst")" 2>/dev/null || true
     if [[ -f "$src" ]]; then
-        if [[ -r "$src" ]] && redact_sensitive_text < "$src" > "$dst" 2>/dev/null; then
+        if [[ -r "$src" ]] && redact_support_text < "$src" > "$dst" 2>/dev/null; then
             :
         else
             printf 'unreadable: %s\n' "$src" > "$dst" 2>/dev/null || true
@@ -3394,10 +3423,10 @@ create_support_bundle() {
         printf 'domain=%s\n' "$PORT_DOMAIN"
         printf 'port=%s\n' "$XRAY_PORT"
         printf 'xray=%s\n' "$xray_ver"
-        printf 'note=Sensitive VLESS links, UUIDs, bearer tokens, GitHub tokens, and wake secrets are redacted.\n'
-    } | redact_sensitive_text > "$tmp/metadata.txt"
+        printf 'note=Sensitive VLESS links, UUIDs, bearer tokens, GitHub tokens, wake secrets, and network identifiers are redacted by default. Set G2RAY_SUPPORT_INCLUDE_NETWORK=1 only when you intentionally need full route details.\n'
+    } | redact_support_text > "$tmp/metadata.txt"
 
-    print_doctor_json | redact_sensitive_text > "$tmp/doctor.json" 2>/dev/null || printf '{}\n' > "$tmp/doctor.json"
+    print_doctor_json | redact_support_text > "$tmp/doctor.json" 2>/dev/null || printf '{}\n' > "$tmp/doctor.json"
     copy_redacted_log_family "$LOG_FILE" "$tmp/logs/g2ray.log"
     copy_redacted_log_family "$STRUCTURED_LOG_FILE" "$tmp/logs/g2ray-events.jsonl"
     copy_redacted_log_family "$DIAGNOSTIC_LOG_FILE" "$tmp/logs/g2ray-diagnostics.log"
@@ -3413,9 +3442,9 @@ create_support_bundle() {
     copy_redacted_file "$BLACKLISTED_ROUTE_CANDIDATES_FILE" "$tmp/state/blacklisted_route_candidates.txt"
     copy_redacted_file "$DOMAIN_LINK_EXPORT_FILE" "$tmp/state/export_domain_link.txt"
     copy_redacted_file "$WAKER_METADATA_FILE" "$tmp/state/waker_metadata.txt"
-    route_candidate_health_summary | redact_sensitive_text > "$tmp/runtime/route_candidates.txt" 2>/dev/null || true
-    route_settling_history_summary | redact_sensitive_text > "$tmp/runtime/route_settling_summary.txt" 2>/dev/null || true
-    last_known_state_summary | redact_sensitive_text > "$tmp/runtime/last_known_state.txt" 2>/dev/null || true
+    route_candidate_health_summary | redact_support_text > "$tmp/runtime/route_candidates.txt" 2>/dev/null || true
+    route_settling_history_summary | redact_support_text > "$tmp/runtime/route_settling_summary.txt" 2>/dev/null || true
+    last_known_state_summary | redact_support_text > "$tmp/runtime/last_known_state.txt" 2>/dev/null || true
 
     mkdir -p "$(dirname "$out")" 2>/dev/null || { rm -rf "$tmp"; return 1; }
     if tar -C "$tmp" -czf "$out" .; then

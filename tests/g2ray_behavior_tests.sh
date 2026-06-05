@@ -1466,6 +1466,7 @@ test_support_bundle_redacts_sensitive_material() {
     printf 'wake_secret=%s\n%s\n"authorization":"Bearer %s"\n' "$bearer" "$uuid" "$bearer" > "$DIAGNOSTIC_LOG_FILE"
     printf 'worker_url=https://worker.example/wake\nwake_secret=%s\nGITHUB_TOKEN=%s\n' "$bearer" "$metadata_token" > "$WAKER_METADATA_FILE"
     printf '2026-05-30T00:00:00Z\t20.0.0.1\t200\t10\ttrue\n' > "$ROUTE_HEALTH_FILE"
+    printf '20.0.0.1\t1\t1\t0\t10\t10\t10\t10\t200\ttrue\t2026-05-30T00:00:00Z\t10\t0\tready\n' > "$ROUTE_STATS_FILE"
     printf 'ip=20.0.0.1\nchecked_at=2026-05-30T00:00:00Z\n' > "$LAST_GOOD_ROUTE_FILE"
     XRAY_BIN="$TMP_ROOT/missing-xray"
     xray_running() { return 0; }
@@ -1484,7 +1485,12 @@ test_support_bundle_redacts_sensitive_material() {
     if grep -R -Fq "$uuid" "$extract" || grep -R -Fq "$bearer" "$extract" || grep -R -Fq "$github_token" "$extract" || grep -R -Fq "$structured_token" "$extract" || grep -R -Fq "$metadata_token" "$extract" || grep -R -Fq "$vless" "$extract"; then
         fail "support bundle leaked sensitive material"
     fi
+    if grep -R -Fq 'behavior-space' "$extract" || grep -R -Fq 'behavior-space-443.app.github.dev' "$extract" || grep -R -Fq '20.0.0.1' "$extract"; then
+        fail "support bundle leaked network identifiers"
+    fi
     grep -R -Fq '<vless-redacted>' "$extract" || fail "support bundle did not mark redacted VLESS links"
+    grep -R -Fq '<codespace-redacted>' "$extract" || fail "support bundle did not mark redacted Codespace identity"
+    grep -R -Fq '<ip-redacted>' "$extract" || fail "support bundle did not mark redacted route IPs"
     python - "$extract/logs/g2ray-events.jsonl" <<'PY' || fail "support bundle redaction corrupted structured JSONL"
 import json
 import sys
@@ -1494,6 +1500,32 @@ assert rows
 PY
     grep -Fq 'xray=unknown' "$extract/metadata.txt" || fail "support bundle did not survive missing Xray binary"
     pass "support bundle redacts sensitive material"
+}
+
+test_support_bundle_can_include_network_metadata_when_opted_in() {
+    reset_runtime_paths
+    CODESPACE_NAME="behavior-space"
+    PORT_DOMAIN="behavior-space-443.app.github.dev"
+    XRAY_PORT=443
+    G2RAY_SUPPORT_INCLUDE_NETWORK=1
+    printf 'route ok ip=20.0.0.1 domain=behavior-space-443.app.github.dev\n' > "$LOG_FILE"
+    printf '2026-05-30T00:00:00Z\t20.0.0.1\t200\t10\ttrue\n' > "$ROUTE_HEALTH_FILE"
+    XRAY_BIN="$TMP_ROOT/missing-xray"
+    xray_running() { return 0; }
+    is_port_open() { return 0; }
+    xhttp_probe_metrics() { printf '200 1\n'; }
+    background_supervisor_status() { printf 'pid=1 running=heartbeat version=ok token=present heartbeat_age=1s\n'; }
+
+    local bundle extract
+    bundle="$(create_support_bundle)" || fail "support bundle creation failed with network opt-in"
+    extract="$TMP_ROOT/support-network-extract"
+    mkdir -p "$extract"
+    tar -xzf "$bundle" -C "$extract"
+    grep -R -Fq 'behavior-space-443.app.github.dev' "$extract" \
+        || fail "network opt-in did not preserve Codespaces domain"
+    grep -R -Fq '20.0.0.1' "$extract" \
+        || fail "network opt-in did not preserve route IP"
+    pass "support bundle can include network metadata when explicitly opted in"
 }
 
 test_support_bundle_handles_relative_log_dir() {
@@ -1653,6 +1685,7 @@ test_diagnostic_snapshot_writes_readable_history
 test_diagnostic_log_rotation_keeps_readable_history
 test_structured_log_jsonl_is_parseable_with_special_chars
 test_support_bundle_redacts_sensitive_material
+test_support_bundle_can_include_network_metadata_when_opted_in
 test_support_bundle_handles_relative_log_dir
 test_support_bundle_includes_rotated_logs
 test_support_bundle_marks_unreadable_optional_logs
