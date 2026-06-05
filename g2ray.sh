@@ -70,6 +70,7 @@ LOW_OVERHEAD_FILE="$DATA_DIR/low_overhead_mode"
 LOW_OVERHEAD_DISABLED_FILE="$DATA_DIR/low_overhead_mode_disabled"
 LATENCY_FOCUS_FILE="$DATA_DIR/latency_focus_mode"
 LATENCY_FOCUS_DISABLED_FILE="$DATA_DIR/latency_focus_mode_disabled"
+DOMAIN_LINK_EXPORT_FILE="$DATA_DIR/export_domain_link.txt"
 LAST_GOOD_ROUTE_FILE="$DATA_DIR/last_good_route.txt"
 PINNED_ROUTE_FILE="$DATA_DIR/pinned_route.txt"
 MANUAL_ROUTE_CANDIDATES_FILE="$DATA_DIR/manual_route_candidates.txt"
@@ -212,6 +213,19 @@ latency_focus_summary() {
     else
         printf 'Disabled - normal diagnostics, route refresh, and exports are enabled\n'
     fi
+}
+
+domain_link_export_enabled() {
+    local value
+    value="${G2RAY_EXPORT_DOMAIN_LINK:-}"
+    if [[ -z "$value" && -f "$DOMAIN_LINK_EXPORT_FILE" ]]; then
+        value=$(awk 'NF {print; exit}' "$DOMAIN_LINK_EXPORT_FILE" 2>/dev/null || true)
+    fi
+    value=$(printf '%s' "${value:-1}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+    case "$value" in
+        0|false|no|off|disabled) return 1 ;;
+        *) return 0 ;;
+    esac
 }
 
 log_structured_event() {
@@ -3146,6 +3160,7 @@ generate_ordered_links() {
     local domain_link ip_links
     ip_links=$(generate_ip_links || true)
     printf '%s\n' "$ip_links" | awk 'NF'
+    domain_link_export_enabled || return 0
     domain_link=$(generate_domain_link || true)
     if [[ -n "$domain_link" ]] && ! printf '%s\n' "$ip_links" | grep -Fxq "$domain_link"; then
         printf '%s\n' "$domain_link"
@@ -3170,7 +3185,8 @@ write_config_metadata() {
   "subscription_scope": "local_codespace_only",
   "performance_profile": "$(json_escape "$PERFORMANCE_PROFILE")",
   "low_overhead": $(low_overhead_enabled && printf true || printf false),
-  "latency_focus": $(latency_focus_enabled && printf true || printf false)
+  "latency_focus": $(latency_focus_enabled && printf true || printf false),
+  "domain_link_exported": $(domain_link_export_enabled && printf true || printf false)
 }
 JSON
     chmod 600 "$CONFIG_META_FILE" 2>/dev/null || true
@@ -3343,6 +3359,7 @@ create_support_bundle() {
     copy_redacted_file "$PINNED_ROUTE_FILE" "$tmp/state/pinned_route.txt"
     copy_redacted_file "$MANUAL_ROUTE_CANDIDATES_FILE" "$tmp/state/manual_route_candidates.txt"
     copy_redacted_file "$BLACKLISTED_ROUTE_CANDIDATES_FILE" "$tmp/state/blacklisted_route_candidates.txt"
+    copy_redacted_file "$DOMAIN_LINK_EXPORT_FILE" "$tmp/state/export_domain_link.txt"
     copy_redacted_file "$WAKER_METADATA_FILE" "$tmp/state/waker_metadata.txt"
     route_candidate_health_summary | redact_sensitive_text > "$tmp/runtime/route_candidates.txt" 2>/dev/null || true
     route_settling_history_summary | redact_sensitive_text > "$tmp/runtime/route_settling_summary.txt" 2>/dev/null || true
@@ -4210,7 +4227,11 @@ while true; do
     case $_choice in
         1)
             check_port_visibility || continue
-            _VLESS_DOMAIN=$(generate_domain_link) || _VLESS_DOMAIN=""
+            if domain_link_export_enabled; then
+                _VLESS_DOMAIN=$(generate_domain_link) || _VLESS_DOMAIN=""
+            else
+                _VLESS_DOMAIN=""
+            fi
             _VLESS_IPS=$(generate_ip_links) || _VLESS_IPS=""
             mapfile -t _VLESS_IP_ARRAY < <(printf '%s\n' "$_VLESS_IPS" | awk 'NF')
             _CONFIG_LINKS=()

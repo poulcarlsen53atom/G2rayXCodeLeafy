@@ -168,6 +168,8 @@ Generated links use `insecure=0&allowInsecure=0` by default so clients keep TLS 
 
 By default the panel can export up to 20 usable IP fallback configs plus the domain config, ordered by rolling route health: success ratio, average successful XHTTP latency, recent weighted latency, latest XHTTP latency, and temporary cooldowns for candidates that timed out. These numbers are `OPTIONS` probes against the Codespaces XHTTP route, not ICMP ping or full throughput tests. If GitHub/DNS exposes fewer healthy unique edge routes, the panel exports fewer rather than duplicating weak or unusable routes.
 
+If your own network blocks the app.github.dev domain but measured IP fallback links work, set `G2RAY_EXPORT_DOMAIN_LINK=0` or write `0` to `data/export_domain_link.txt` before refreshing exports. The default keeps the domain link because it remains useful on networks where app.github.dev is allowed.
+
 The panel saves high-resolution QR PNG files under `data/qr/` for the displayed configs. If a phone QR scanner struggles with the terminal QR preview, open the PNG in VS Code/browser, import the copy-ready link from the panel output, or use `configs-to-copy-for-mobile.txt`. Terminal zoom, font rendering, and dark themes can make dense QR codes harder to scan.
 
 </details>

@@ -1516,7 +1516,7 @@ test_headless_benchmark_path_is_documented_and_guarded() {
         || fail 'script does not decay stale last-good route preference before export ordering'
     grep_fixed 'checked_epoch=$(date -u -d "$checked" +%s' "$SCRIPT" \
         || fail 'last-good route freshness does not use saved checked_at timestamps'
-    grep_fixed 'unset G2RAY_LOW_OVERHEAD G2RAY_LATENCY_FOCUS G2RAY_BENCH_MOCK G2RAY_BENCH_ISOLATED' "$BEHAVIOR_TESTS" \
+    grep -Eq 'unset .*G2RAY_BENCH_MOCK.*G2RAY_BENCH_ISOLATED|unset .*G2RAY_BENCH_ISOLATED.*G2RAY_BENCH_MOCK' "$BEHAVIOR_TESTS" \
         || fail 'behavior test harness can leak benchmark isolation state between tests'
     grep_fixed 'G2RAY_LAST_GOOD_ROUTE_MAX_AGE_SEC' "$README" \
         || fail 'README does not document the last-good route decay knob'

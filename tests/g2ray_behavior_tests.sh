@@ -36,6 +36,7 @@ reset_runtime_paths() {
     LOW_OVERHEAD_DISABLED_FILE="$DATA_DIR/low_overhead_mode_disabled"
     LATENCY_FOCUS_FILE="$DATA_DIR/latency_focus_mode"
     LATENCY_FOCUS_DISABLED_FILE="$DATA_DIR/latency_focus_mode_disabled"
+    DOMAIN_LINK_EXPORT_FILE="$DATA_DIR/export_domain_link.txt"
     SUBSCRIPTION_FILE="$TMP_ROOT/configs-subscription-base64.txt"
     CONFIG_META_FILE="$TMP_ROOT/configs-meta.json"
     LAST_GOOD_ROUTE_FILE="$DATA_DIR/last_good_route.txt"
@@ -63,7 +64,7 @@ reset_runtime_paths() {
     DNS_CACHE_TTL_SEC=300
     ROUTE_FAILURE_COOLDOWN_SEC=180
     LAST_GOOD_ROUTE_MAX_AGE_SEC=1800
-    unset G2RAY_LOW_OVERHEAD G2RAY_LATENCY_FOCUS G2RAY_BENCH_MOCK G2RAY_BENCH_ISOLATED
+    unset G2RAY_LOW_OVERHEAD G2RAY_LATENCY_FOCUS G2RAY_EXPORT_DOMAIN_LINK G2RAY_BENCH_MOCK G2RAY_BENCH_ISOLATED
 }
 
 export CODESPACE_NAME="behavior-space"
@@ -836,6 +837,23 @@ PY
     pass "config exports produce stable mobile and base64 subscription artifacts"
 }
 
+test_domain_link_export_can_be_disabled_for_blocked_networks() {
+    reset_runtime_paths
+    PORT_DOMAIN="behavior-space-443.app.github.dev"
+    GITHUB_USER="tester"
+    printf '11111111-2222-3333-4444-555555555555\n' > "$UUID_FILE"
+    usable_fallback_ips() { printf '20.0.0.1\n'; }
+
+    printf '0\n' > "$DOMAIN_LINK_EXPORT_FILE"
+    local links
+    links="$(generate_ordered_links)"
+
+    [[ "$links" == *"@20.0.0.1:"* ]] || fail "domain-disabled exports lost IP fallback link"
+    [[ "$links" != *"@behavior-space-443.app.github.dev:"* ]] \
+        || fail "domain-disabled exports still included the blocked domain link"
+    pass "domain link export can be disabled for blocked local networks"
+}
+
 test_generated_links_follow_configured_xhttp_path() {
     reset_runtime_paths
     BASE_DIR="$TMP_ROOT"
@@ -1468,6 +1486,7 @@ test_boot_status_helpers_record_silent_start_result
 test_generate_config_replaces_stale_no_config_boot_status
 test_config_exports_write_local_only_metadata
 test_config_exports_are_stable_client_artifacts
+test_domain_link_export_can_be_disabled_for_blocked_networks
 test_generated_links_follow_configured_xhttp_path
 test_config_metadata_sanitizes_invalid_max_fallback_links
 test_bench_json_reports_deterministic_budgets
