@@ -87,5 +87,4 @@ jobs:
         working-directory: worker/codespace-waker
         run: |
           npm ci
-          cp wrangler.toml.example wrangler.toml
           npm run dry-run

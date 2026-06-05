@@ -64,7 +64,7 @@ reset_runtime_paths() {
     DNS_CACHE_TTL_SEC=300
     ROUTE_FAILURE_COOLDOWN_SEC=180
     LAST_GOOD_ROUTE_MAX_AGE_SEC=1800
-    unset G2RAY_LOW_OVERHEAD G2RAY_LATENCY_FOCUS G2RAY_EXPORT_DOMAIN_LINK G2RAY_BENCH_MOCK G2RAY_BENCH_ISOLATED
+    unset G2RAY_LOW_OVERHEAD G2RAY_LATENCY_FOCUS G2RAY_EXPORT_DOMAIN_LINK G2RAY_EXPORT_REVALIDATE_TOP_CACHED G2RAY_BENCH_MOCK G2RAY_BENCH_ISOLATED
 }
 
 export CODESPACE_NAME="behavior-space"
@@ -727,6 +727,7 @@ test_usable_fallback_ips_uses_fresh_cache() {
     reset_runtime_paths
     ROUTE_HEALTH_TTL_SEC=300
     MAX_FALLBACK_LINKS=2
+    G2RAY_EXPORT_REVALIDATE_TOP_CACHED=0
     cat > "$ROUTE_HEALTH_FILE" <<'EOF'
 2026-05-30T00:00:00Z	20.0.0.5	200	70	true
 2026-05-30T00:00:00Z	20.0.0.6	200	80	true
@@ -736,6 +737,33 @@ EOF
     mapfile -t routes < <(usable_fallback_ips)
     [[ "${routes[*]}" == "20.0.0.5 20.0.0.6" ]] || fail "usable_fallback_ips did not return cached usable routes"
     pass "usable fallback exports use fresh cached route health"
+}
+
+test_usable_fallback_ips_revalidates_top_cached_route() {
+    reset_runtime_paths
+    ROUTE_HEALTH_TTL_SEC=300
+    MAX_FALLBACK_LINKS=2
+    PORT_DOMAIN="behavior-space-443.app.github.dev"
+    cat > "$ROUTE_HEALTH_FILE" <<'EOF'
+2026-05-30T00:00:00Z	20.0.0.5	200	70	true
+2026-05-30T00:00:00Z	20.0.0.6	200	80	true
+EOF
+    resolve_domain_ips() {
+        printf '%s\n' 20.0.0.5 20.0.0.6 20.0.0.7
+    }
+    xhttp_probe_metrics() {
+        case "${2:-}" in
+            20.0.0.5) printf '404 40 route_settling_404\n' ;;
+            *) printf '200 60 ready\n' ;;
+        esac
+    }
+
+    mapfile -t routes < <(usable_fallback_ips)
+    [[ "${routes[*]}" == "20.0.0.6 20.0.0.7" ]] \
+        || fail "usable_fallback_ips did not replace stale top cached route: ${routes[*]:-none}"
+    grep -Fq 'fallback_route_cache_stale ip=20.0.0.5' "$LOG_FILE" \
+        || fail "stale top cache revalidation was not logged"
+    pass "usable fallback exports revalidate the top cached route"
 }
 
 test_usable_fallback_ips_fills_partial_fresh_cache() {
@@ -760,8 +788,10 @@ EOF
     mapfile -t routes < <(usable_fallback_ips)
     [[ "${routes[*]}" == "20.0.0.5 20.0.0.6 20.0.0.7 20.0.0.8" ]] \
         || fail "usable_fallback_ips did not fill partial cached routes with live probes"
-    ! grep -Fq '20.0.0.5' "$probes_file" \
-        || fail "usable_fallback_ips live-probed a route already emitted from cache"
+    grep -Fxq '20.0.0.5' "$probes_file" \
+        || fail "usable_fallback_ips did not revalidate the top cached route"
+    ! grep -Fxq '20.0.0.6' "$probes_file" \
+        || fail "usable_fallback_ips live-probed every cached route instead of only the top one"
     pass "usable fallback exports fill partial fresh cache with live-probed routes"
 }
 
@@ -990,6 +1020,8 @@ test_config_metadata_sanitizes_invalid_max_fallback_links() {
 test_bench_json_reports_deterministic_budgets() {
     reset_runtime_paths
     local output bench_file bench_root command_output
+    [[ "$(bench_budget_ms recover_json_contract)" == "6000" ]] \
+        || fail "default recover_json_contract benchmark budget is not the portable 6000ms value"
     if ! output="$(
         G2RAY_BENCH_MOCK=1 \
         G2RAY_BENCH_BUDGET_EXPORT_MS=10000 \
@@ -1588,6 +1620,7 @@ test_cached_route_health_is_a_durable_candidate_source
 test_dns_candidate_cache_reuses_fresh_provider_results
 test_last_known_state_scans_full_current_log
 test_usable_fallback_ips_uses_fresh_cache
+test_usable_fallback_ips_revalidates_top_cached_route
 test_usable_fallback_ips_fills_partial_fresh_cache
 test_usable_fallback_ips_caps_live_probe_fallback
 test_xhttp_config_path_is_cached_by_config_content

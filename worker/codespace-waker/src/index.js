@@ -174,7 +174,20 @@ async function requireAuthorizedContext(request, env, options = {}) {
   const requireGithubToken = options.githubToken !== false;
   const suppliedSecret = await readSuppliedSecret(request);
 
-  if (!env.WAKE_SECRET || !(await secretsEqual(suppliedSecret, env.WAKE_SECRET))) {
+  if (!env.WAKE_SECRET) {
+    return {
+      ok: false,
+      status: 500,
+      body: {
+        ok: false,
+        error: "missing_wake_secret",
+        next_action_code: "configure_wake_secret",
+        next_action: "Configure the WAKE_SECRET Cloudflare secret, then retry."
+      }
+    };
+  }
+
+  if (!(await secretsEqual(suppliedSecret, env.WAKE_SECRET))) {
     const limited = await rateLimitFailedAuth(request, env);
     if (limited) return limited;
     return { ok: false, status: 401, body: { ok: false, error: "unauthorized" } };
@@ -837,7 +850,8 @@ function healthMessage(status, routeProbe) {
 function eventFromResult(kind, codespace, data) {
   const routeChecked = data.route_checked === false ? false : Boolean(data.route_probe);
   const routeReady = routeChecked && data.route_ready != null ? data.route_ready === true : null;
-  const routeProbeDuration = data.route_probe ? data.route_probe.latency_ms : null;
+  const routeProbe = routeChecked ? data.route_probe : null;
+  const routeProbeDuration = routeProbe ? routeProbe.latency_ms : null;
   return {
     ts: new Date().toISOString(),
     kind,
@@ -847,11 +861,11 @@ function eventFromResult(kind, codespace, data) {
     state: data.state || null,
     route_checked: routeChecked,
     route_ready: routeReady,
-    route_http_status: data.route_probe ? data.route_probe.http_status : null,
+    route_http_status: routeProbe ? routeProbe.http_status : null,
     route_latency_ms: routeReady === true ? routeProbeDuration : null,
     route_probe_duration_ms: routeProbeDuration,
-    route_waited_ms: data.route_probe ? data.route_probe.waited_ms : null,
-    route_attempts: data.route_probe ? data.route_probe.attempts : null,
+    route_waited_ms: routeProbe ? routeProbe.waited_ms : null,
+    route_attempts: routeProbe ? routeProbe.attempts : null,
     reason: data.reason || null,
     next_action_code: data.next_action_code || null,
     quota_blocked: data.quota_blocked === true,
@@ -966,13 +980,16 @@ async function recordQuotaIncident(env, event, data) {
   try {
     const nowIso = currentDate(env).toISOString();
     const existing = await readQuotaIncident(env, event.codespace) || {};
+    const existingResetEstimate = existing.quota_reset_estimate_utc || null;
+    const incomingResetEstimate = data.quota_reset_estimate_utc || null;
+    const quotaResetEstimate = existing.quota_drought_active === true && existingResetEstimate
+      ? existingResetEstimate
+      : incomingResetEstimate || existingResetEstimate;
     const incident = {
       ...existing,
       codespace: event.codespace,
       last_observed_at: nowIso,
-      quota_reset_estimate_utc: existing.quota_drought_active === true && !data.quota_blocked
-        ? existing.quota_reset_estimate_utc || data.quota_reset_estimate_utc || null
-        : data.quota_reset_estimate_utc || existing.quota_reset_estimate_utc || null,
+      quota_reset_estimate_utc: quotaResetEstimate,
       retention_period_minutes: data.retention_period_minutes ?? existing.retention_period_minutes ?? null,
       retention_expires_at: data.retention_expires_at || existing.retention_expires_at || null,
       retention_risk: data.retention_risk || existing.retention_risk || "unknown"
@@ -1129,7 +1146,7 @@ function quotaCronPostReset(incident, now) {
 function quotaCronWakeAllowed(incident, now) {
   const resetEstimate = incident.quota_reset_estimate_utc || null;
   if (quotaCronPostReset(incident, now)) {
-    return incident.last_cron_post_reset_wake_reset_estimate_utc !== resetEstimate;
+    return true;
   }
   return incident.last_cron_wake_reset_estimate_utc !== resetEstimate;
 }

@@ -228,6 +228,15 @@ domain_link_export_enabled() {
     esac
 }
 
+route_export_revalidate_top_cached_enabled() {
+    local value
+    value=$(printf '%s' "${G2RAY_EXPORT_REVALIDATE_TOP_CACHED:-1}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+    case "$value" in
+        0|false|no|off|disabled) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
 log_structured_event() {
     local ts="$1" level="$2" msg="$3" event
     event=$(printf '%s' "$msg" | awk '{print $1; exit}' | tr -cd 'A-Za-z0-9_.:-')
@@ -987,7 +996,9 @@ _atomic_write() {
     local file="$1" content="$2" tmp
     tmp=$(mktemp "${file}.XXXXXX")
     printf '%s\n' "$content" > "$tmp"
+    chmod 600 "$tmp" 2>/dev/null || true
     mv -f "$tmp" "$file"
+    chmod 600 "$file" 2>/dev/null || true
 }
 
 first_nonempty_line() {
@@ -1071,7 +1082,7 @@ waker_metadata_summary() {
 }
 
 test_cloudflare_waker() {
-    local worker_url="${1:-}" wake_secret="${2:-}" response status ok reason codespace route_ready route_status route_latency next_action curl_config
+    local worker_url="${1:-}" wake_secret="${2:-}" response status ok reason codespace route_ready route_status route_latency next_action
     worker_url=$(normalize_waker_url "${worker_url:-$(waker_metadata_value worker_url)}" 2>/dev/null || true)
     if [[ -z "$worker_url" ]]; then
         echo -ne "  ${GREEN}Worker wake URL:${NC} "
@@ -1093,25 +1104,17 @@ test_cloudflare_waker() {
     fi
 
     echo -e "  ${DIM}Calling Worker with Authorization: Bearer ...${NC}"
-    curl_config=$(mktemp "$DATA_DIR/waker-curl.XXXXXX") || {
-        echo -e "  ${RED}Could not create temporary curl config.${NC}"
-        return 1
-    }
-    chmod 600 "$curl_config" 2>/dev/null || true
-    {
+    response=$({
         printf 'request = "POST"\n'
         printf 'url = "%s"\n' "$worker_url"
         printf 'max-time = "%s"\n' "$WAKER_TEST_TIMEOUT_SEC"
         printf 'silent\nshow-error\n'
         printf 'header = "Authorization: Bearer %s"\n' "$wake_secret"
-    } > "$curl_config"
-    response=$(curl --config "$curl_config" 2>&1) || {
-        rm -f "$curl_config" 2>/dev/null || true
+    } | curl --config - 2>&1) || {
         echo -e "  ${RED}Worker call failed.${NC}"
         printf '%s\n' "$response" | sed 's/^/  /'
         return 1
     }
-    rm -f "$curl_config" 2>/dev/null || true
 
     if command -v jq >/dev/null 2>&1 && printf '%s' "$response" | jq . >/dev/null 2>&1; then
         ok=$(printf '%s' "$response" | jq -r '.ok // false' 2>/dev/null)
@@ -2720,8 +2723,16 @@ last_good_route_summary() {
 }
 
 route_probe_jitter_sleep() {
-    local delay="${ROUTE_PROBE_JITTER_SEC:-0}"
-    [[ "$delay" == "0" || "$delay" == "0.0" ]] && return 0
+    local max_delay="${ROUTE_PROBE_JITTER_SEC:-0}" delay
+    [[ "$max_delay" == "0" || "$max_delay" == "0.0" ]] && return 0
+    delay=$(awk -v max="$max_delay" -v seed="$RANDOM" '
+        BEGIN {
+            if (max <= 0) { print "0"; exit }
+            srand(systime() + seed)
+            printf "%.3f\n", rand() * max
+        }
+    ' 2>/dev/null || printf '0')
+    [[ "$delay" == "0" || "$delay" == "0.000" ]] && return 0
     sleep "$delay" 2>/dev/null || true
 }
 
@@ -3100,6 +3111,7 @@ safe_max_fallback_links() {
 
 usable_fallback_ips() {
     local ip ip_probe ip_ms reason count=0 max_links candidates usable probe_cap min_probe_cap probed=0 emitted=""
+    local cached_routes=() cache_ready=true
     max_links=$(safe_max_fallback_links)
     probe_cap=$(route_monitor_max_candidates)
     min_probe_cap=$(( max_links * 3 ))
@@ -3108,15 +3120,35 @@ usable_fallback_ips() {
     if ! route_health_cache_fresh; then
         refresh_route_candidate_health >/dev/null 2>&1 || true
     fi
-    if route_health_cache_fresh && cached_usable_fallback_ips >/dev/null 2>&1; then
-        while IFS= read -r ip; do
-            [[ -n "$ip" ]] || continue
-            printf '%s\n' "$ip"
-            emitted="${emitted} ${ip}"
-            usable=true
-            count=$((count + 1))
-            (( count >= max_links )) && return 0
-        done < <(cached_usable_fallback_ips)
+    if route_health_cache_fresh; then
+        mapfile -t cached_routes < <(cached_usable_fallback_ips || true)
+        if ((${#cached_routes[@]})); then
+            if route_export_revalidate_top_cached_enabled; then
+                ip="${cached_routes[0]}"
+                read -r ip_probe ip_ms reason < <(xhttp_probe_metrics external "$ip")
+                [[ -n "$reason" ]] || reason=$(route_failure_reason_for_status "$ip_probe")
+                update_route_candidate_stats "$ip" "$ip_probe" "$ip_ms" "export_cache_revalidate" "$reason" || true
+                if xhttp_status_usable "$ip_probe"; then
+                    save_last_good_route "$ip" "$ip_probe" "$ip_ms" "export_cache_revalidate"
+                else
+                    cache_ready=false
+                    emitted="${emitted} ${ip}"
+                    [[ "$reason" == "timeout_or_unreachable" || "$reason" == "dns_tls_or_network_unreachable" || "$reason" == "edge_or_origin_error" ]] \
+                        && record_route_candidate_cooldown "$ip" "$reason"
+                    log_event WARN "fallback_route_cache_stale ip=${ip} xhttp_probe=${ip_probe:-0} xhttp_probe_ms=${ip_ms:-0} reason=${reason}"
+                fi
+            fi
+            if [[ "$cache_ready" == true ]]; then
+                for ip in "${cached_routes[@]}"; do
+                    [[ -n "$ip" ]] || continue
+                    printf '%s\n' "$ip"
+                    emitted="${emitted} ${ip}"
+                    usable=true
+                    count=$((count + 1))
+                    (( count >= max_links )) && return 0
+                done
+            fi
+        fi
     fi
 
     candidates=$(resolve_domain_ips "$PORT_DOMAIN" || true)
@@ -3298,7 +3330,7 @@ log_diagnostic_snapshot() {
             printf '  none\n'
         fi
         printf '\n'
-    } >> "$DIAGNOSTIC_LOG_FILE" 2>/dev/null || true
+    } | redact_sensitive_text >> "$DIAGNOSTIC_LOG_FILE" 2>/dev/null || true
     chmod 600 "$DIAGNOSTIC_LOG_FILE" 2>/dev/null || true
 }
 
@@ -3930,7 +3962,7 @@ bench_budget_ms() {
         route_ordering) bench_budget_value "${G2RAY_BENCH_BUDGET_ROUTE_ORDERING_MS:-1500}" 1500 ;;
         export_generation) bench_budget_value "${G2RAY_BENCH_BUDGET_EXPORT_MS:-10000}" 10000 ;;
         doctor_json) bench_budget_value "${G2RAY_BENCH_BUDGET_DOCTOR_MS:-6000}" 6000 ;;
-        recover_json_contract) bench_budget_value "${G2RAY_BENCH_BUDGET_RECOVER_JSON_MS:-3000}" 3000 ;;
+        recover_json_contract) bench_budget_value "${G2RAY_BENCH_BUDGET_RECOVER_JSON_MS:-6000}" 6000 ;;
         *) bench_budget_value "${G2RAY_BENCH_BUDGET_DEFAULT_MS:-1000}" 1000 ;;
     esac
 }

@@ -68,6 +68,20 @@ async function testFailedSecretRateLimit() {
   console.log("PASS: Worker rate-limits repeated bad wake secrets");
 }
 
+async function testMissingWakeSecretIsConfigurationError() {
+  const response = await worker.fetch(
+    makeRequest("/api/health"),
+    baseEnv({ WAKE_SECRET: "", WAKER_KV: makeKv() }),
+    {}
+  );
+  const body = await responseJson(response);
+  assert.equal(response.status, 500);
+  assert.equal(body.ok, false);
+  assert.equal(body.error, "missing_wake_secret");
+  assert.equal(body.next_action_code, "configure_wake_secret");
+  console.log("PASS: Worker reports missing wake secret as configuration error");
+}
+
 async function testGithubRateLimitClassification() {
   const resetEpoch = Math.ceil(Date.now() / 1000) + 120;
   globalThis.fetch = async (input) => {
@@ -217,6 +231,10 @@ async function testHealthCanSkipRouteProbe() {
   const history = await responseJson(await worker.fetch(makeRequest("/api/history"), baseEnv({ WAKER_KV: kv }), {}));
   assert.equal(history.history[0].route_checked, false);
   assert.equal(history.history[0].route_ready, null);
+  assert.equal(history.history[0].route_http_status, null);
+  assert.equal(history.history[0].route_probe_duration_ms, null);
+  assert.equal(history.history[0].route_waited_ms, null);
+  assert.equal(history.history[0].route_attempts, null);
   console.log("PASS: Worker health can skip route probing for cheap status checks");
 }
 
@@ -849,6 +867,65 @@ async function testScheduledQuotaCronRetriesAfterResetIfPreResetWakeStillBlocked
   assert.equal(incident.quota_drought_active, false);
   assert.equal(incident.last_successful_start_at, "2026-07-01T00:05:00.000Z");
   console.log("PASS: Worker quota cron retries after reset if a pre-reset wake was still quota-blocked");
+}
+
+async function testScheduledQuotaCronKeepsRetryingAfterResetWhileStillBlocked() {
+  const kv = makeKv();
+  await kv.put("quota-incident:behavior-space", JSON.stringify({
+    quota_drought_active: true,
+    quota_reset_estimate_utc: "2026-07-01T00:00:00Z"
+  }));
+  let startCalls = 0;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/start")) {
+      startCalls += 1;
+      return new Response(JSON.stringify({ message: "Payment required" }), {
+        status: 402,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    if (url.includes("api.github.com")) {
+      return new Response(JSON.stringify({
+        name: "behavior-space",
+        state: "Shutdown",
+        pending_operation: false,
+        retention_period_minutes: 43200,
+        retention_expires_at: "2026-07-20T00:00:00Z"
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  const env = baseEnv({
+    WAKER_KV: kv,
+    QUOTA_SURVIVAL_CRON_ENABLED: "true",
+    TEST_NOW_UTC: "2026-06-30T19:00:00Z"
+  });
+  for (const iso of [
+    "2026-06-30T19:00:00Z",
+    "2026-07-01T00:05:00Z",
+    "2026-07-01T01:10:00Z"
+  ]) {
+    env.TEST_NOW_UTC = iso;
+    const waitUntilPromises = [];
+    await worker.scheduled(
+      { scheduledTime: Date.parse(iso) },
+      env,
+      { waitUntil(promise) { waitUntilPromises.push(promise); } }
+    );
+    await Promise.all(waitUntilPromises);
+  }
+
+  assert.equal(startCalls, 3);
+  const incident = JSON.parse(await kv.get("quota-incident:behavior-space"));
+  assert.equal(incident.quota_drought_active, true);
+  assert.equal(incident.quota_reset_estimate_utc, "2026-07-01T00:00:00Z");
+  assert.equal(incident.last_cron_post_reset_wake_reset_estimate_utc, "2026-07-01T00:00:00Z");
+  console.log("PASS: Worker quota cron keeps retrying after reset while still blocked");
 }
 
 async function testWakeFailureIncludesNextAction() {
@@ -1604,6 +1681,7 @@ async function testHealthRouteReadyTransitionNotification() {
 
 try {
   await testFailedSecretRateLimit();
+  await testMissingWakeSecretIsConfigurationError();
   await testGithubRateLimitClassification();
   await testGithubScopeFailureClassification();
   await testGithubUnknownForbiddenClassificationIsNeutral();
@@ -1623,6 +1701,7 @@ try {
   await testScheduledQuotaCronIsDisabledAndThrottledBeforeReset();
   await testScheduledQuotaCronAttemptsOneNearResetWake();
   await testScheduledQuotaCronRetriesAfterResetIfPreResetWakeStillBlocked();
+  await testScheduledQuotaCronKeepsRetryingAfterResetWhileStillBlocked();
   await testWakeFailureIncludesNextAction();
   await testHealthTreatsHttp400RouteAsUsable();
   await testWakeRequiresStableRouteReadiness();

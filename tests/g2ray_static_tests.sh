@@ -181,6 +181,7 @@ test_support_bundle_has_safe_entrypoint() {
 }
 
 test_shell_files_are_lf_normalized() {
+    local file
     [[ -f "$GITATTRIBUTES" ]] || fail '.gitattributes is missing'
     grep_fixed '*.sh text eol=lf' "$GITATTRIBUTES" \
         || fail '.gitattributes does not force shell scripts to LF'
@@ -190,6 +191,12 @@ test_shell_files_are_lf_normalized() {
         || fail '.gitattributes does not force Node ESM test scripts to LF'
     grep_fixed 'tests/*.sh text eol=lf' "$GITATTRIBUTES" \
         || fail '.gitattributes does not force test shell scripts to LF'
+    while IFS= read -r file; do
+        [[ -f "$ROOT_DIR/$file" ]] || continue
+        if LC_ALL=C grep -q $'\r' "$ROOT_DIR/$file"; then
+            fail "tracked script/helper file contains CRLF bytes: $file"
+        fi
+    done < <(git -C "$ROOT_DIR" ls-files '*.sh' '*.ps1' '*.mjs' 2>/dev/null)
     pass 'shell files are LF-normalized for Linux Bash'
 }
 
@@ -1181,8 +1188,11 @@ test_panel_guides_cloudflare_waker_setup() {
         || fail 'panel Worker test timeout is not configurable for long wake waits'
     grep_fixed 'printf '\''max-time = "%s"\n'\'' "$WAKER_TEST_TIMEOUT_SEC"' "$SCRIPT" \
         || fail 'panel Worker test still uses a fixed short curl timeout'
-    grep_fixed 'curl --config "$curl_config"' "$SCRIPT" \
-        || fail 'panel Worker test exposes the wake secret through curl arguments'
+    grep_fixed 'curl --config -' "$SCRIPT" \
+        || fail 'panel Worker test does not feed the secret-bearing curl config through stdin'
+    if grep_fixed 'waker-curl' "$SCRIPT"; then
+        fail 'panel Worker test still writes the wake secret to a temporary curl config file'
+    fi
     grep_fixed '.route_ready // empty' "$SCRIPT" \
         || fail 'panel Worker test does not show route_ready from the Worker response'
     grep_fixed '.route_probe.http_status // empty' "$SCRIPT" \
@@ -1449,10 +1459,10 @@ test_ci_runs_static_regressions() {
         || fail 'CI workflow does not syntax-check the Worker script'
     grep_fixed 'npm test' "$CI_WORKFLOW" \
         || fail 'CI workflow does not run Worker behavior tests through package scripts'
-    grep_fixed 'cp wrangler.toml.example wrangler.toml' "$CI_WORKFLOW" \
-        || fail 'CI workflow does not dry-run the shipped Wrangler config'
     grep_fixed 'npm run dry-run' "$CI_WORKFLOW" \
         || fail 'CI workflow does not dry-run bundle the Worker with pinned Wrangler'
+    grep_fixed 'node scripts/dry-run.mjs' "$WORKER_DIR/package.json" \
+        || fail 'Worker dry-run package script is not self-contained'
     grep_fixed 'bash ./tests/g2ray_static_tests.sh' "$CI_WORKFLOW" \
         || fail 'CI workflow does not run the static regression suite'
     grep_fixed 'bash ./tests/g2ray_behavior_tests.sh' "$CI_WORKFLOW" \
