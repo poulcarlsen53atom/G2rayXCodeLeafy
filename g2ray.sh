@@ -2435,6 +2435,15 @@ JSONEOF
         echo -e "  ${YELLOW}⚠ Could not set Codespaces port ${XRAY_PORT} public. Check the PORTS tab.${NC}"
     fi
     refresh_config_exports >/dev/null 2>&1 || true
+    local _boot_code _boot_ms _boot_reason
+    read -r _boot_code _boot_ms _boot_reason < <(xhttp_probe_metrics external)
+    if xhttp_status_usable "${_boot_code:-0}"; then
+        write_boot_status "ready" "generate_config" "Config generated and the Codespaces route is usable." "${_boot_code:-0}" "${_boot_ms:-0}"
+    elif [[ "${_boot_code:-0}" == "404" ]]; then
+        write_boot_status "route_settling" "generate_config" "Config generated, but GitHub's app route is still settling. Wait, check health, or run Recover Now." "${_boot_code:-0}" "${_boot_ms:-0}"
+    else
+        write_boot_status "needs_attention" "generate_config" "Config generated, but the external route is not usable yet." "${_boot_code:-0}" "${_boot_ms:-0}"
+    fi
 }
 
 url_encode_query_value() {

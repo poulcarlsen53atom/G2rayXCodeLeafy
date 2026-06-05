@@ -770,6 +770,29 @@ test_boot_status_helpers_record_silent_start_result() {
     pass "boot status helpers persist readable startup state"
 }
 
+test_generate_config_replaces_stale_no_config_boot_status() {
+    reset_runtime_paths
+    (
+        CODESPACE_NAME="behavior-space"
+        PORT_DOMAIN="behavior-space-443.app.github.dev"
+        XRAY_PORT=443
+        PERFORMANCE_PROFILE=balanced
+        write_boot_status "no_config" "silent_start" "No config exists yet" "0" "0"
+        uuidgen() { printf '11111111-2222-3333-4444-555555555555\n'; }
+        start_xray() { return 0; }
+        wait_for_port() { return 0; }
+        ensure_codespace_port_public() { return 0; }
+        refresh_config_exports() { return 0; }
+        xhttp_probe_metrics() { printf '200 12 ready\n'; }
+        generate_config >/dev/null
+        python -m json.tool "$BOOT_STATUS_FILE" >/dev/null || fail "generated boot status is not valid JSON"
+        grep -Fq '"status": "ready"' "$BOOT_STATUS_FILE" || fail "generate_config did not mark boot status ready"
+        grep -Fq '"reason": "generate_config"' "$BOOT_STATUS_FILE" || fail "generate_config did not replace stale silent_start reason"
+        ! boot_status_summary | grep -Fq 'no_config' || fail "diagnostics would still show stale no_config boot status"
+    )
+    pass "generate_config replaces stale no-config boot status"
+}
+
 test_config_exports_write_local_only_metadata() {
     reset_runtime_paths
     BASE_DIR="$TMP_ROOT"
@@ -1442,6 +1465,7 @@ test_usable_fallback_ips_fills_partial_fresh_cache
 test_usable_fallback_ips_caps_live_probe_fallback
 test_xhttp_config_path_is_cached_by_config_content
 test_boot_status_helpers_record_silent_start_result
+test_generate_config_replaces_stale_no_config_boot_status
 test_config_exports_write_local_only_metadata
 test_config_exports_are_stable_client_artifacts
 test_generated_links_follow_configured_xhttp_path
